@@ -1,9 +1,9 @@
 import subprocess
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
 import configparser
-import os
 
 # Enable logging
 logging.basicConfig(
@@ -32,10 +32,12 @@ def start(update: Update, context: CallbackContext) -> None:
         return
 
     keyboard = [
+        [InlineKeyboardButton("➕ Buat Akun", callback_data='create_account_menu')],
+        [InlineKeyboardButton("🗑️ Hapus Akun", callback_data='delete_account')],
+        [InlineKeyboardButton("📋 Daftar Akun", callback_data='list_accounts')],
         [InlineKeyboardButton("🔧 Cek Status Layanan", callback_data='status')],
         [InlineKeyboardButton("🔄 Restart Semua Layanan", callback_data='restart_all')],
         [InlineKeyboardButton("💻 Info VPS", callback_data='info_vps')],
-        [InlineKeyboardButton("➕ Buat Akun Trial", callback_data='create_trial')],
         [InlineKeyboardButton("🎨 Ubah Banner SSH", callback_data='change_banner')],
         [InlineKeyboardButton("🔌 Restart NoobzVPN", callback_data='restart_noobzvpn')],
     ]
@@ -52,9 +54,54 @@ def button(update: Update, context: CallbackContext) -> None:
         
     query.answer()
 
-    if query.data == 'create_trial':
-        result = run_command('/usr/local/bin/menu create_trial')
-        query.edit_message_text(text=f"🔧 Membuat akun trial...\n\n<pre>{result}</pre>", parse_mode='HTML')
+    if query.data == 'create_account_menu':
+        keyboard = [
+            [InlineKeyboardButton("🧪 Buat Akun Trial", callback_data='create_trial')],
+            [InlineKeyboardButton("💳 Buat Akun Premium", callback_data='create_premium')],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data='back_to_main')],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        query.edit_message_text(text='Pilih jenis akun:', reply_markup=reply_markup)
+
+    elif query.data in ['create_trial', 'create_premium']:
+        account_type = "trial" if query.data == 'create_trial' else "premium"
+        keyboard = [
+            [InlineKeyboardButton("SSH / Dropbear", callback_data=f'create_{account_type}_ssh')],
+            [InlineKeyboardButton("VMess WS", callback_data=f'create_{account_type}_vmess')],
+            [InlineKeyboardButton("Vless WS", callback_data=f'create_{account_type}_vless')],
+            [InlineKeyboardButton("Trojan WS", callback_data=f'create_{account_type}_trojan')],
+            [InlineKeyboardButton("Shadowsocks WS", callback_data=f'create_{account_type}_ss')],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data='create_account_menu')],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        query.edit_message_text(text=f'Pilih layanan untuk akun {account_type}:', reply_markup=reply_markup)
+
+    elif query.data.startswith('create_'):
+        parts = query.data.split('_')
+        account_type = parts[1]
+        service_map = {'ssh': '1', 'vmess': '2', 'vless': '3', 'trojan': '4', 'ss': '5'}
+        service_name = parts[2]
+        service_choice = service_map.get(service_name, '0')
+
+        # Simpan pilihan layanan ke file sementara
+        with open('/tmp/service_choice', 'w') as f:
+            f.write(service_choice)
+        
+        command = f'/usr/local/bin/menu create_{account_type}'
+        result = run_command(command)
+        
+        # Hapus file sementara
+        if os.path.exists('/tmp/service_choice'):
+            os.remove('/tmp/service_choice')
+            
+        query.edit_message_text(text=f"✅ Membuat akun {account_type} untuk layanan {service_name}...\n\n<pre>{result}</pre>", parse_mode='HTML')
+
+    elif query.data == 'delete_account':
+        query.edit_message_text(text="Untuk menghapus akun, silakan gunakan menu 'menu' di terminal VPS dan pilih opsi 3.")
+
+    elif query.data == 'list_accounts':
+        result = run_command('/usr/local/bin/menu list_accounts')
+        query.edit_message_text(text=f"📋 <b>Daftar Akun:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
 
     elif query.data == 'status':
         result = run_command('/usr/local/bin/menu status')
@@ -91,6 +138,8 @@ def button(update: Update, context: CallbackContext) -> None:
         result = run_command('/usr/local/bin/menu restart_noobzvpn')
         query.edit_message_text(text=f"🔌 <b>Restart NoobzVPN:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
 
+    elif query.data == 'back_to_main':
+        start(update, context) # Kembali ke menu utama
 
 def main() -> None:
     updater = Updater(BOT_TOKEN)
