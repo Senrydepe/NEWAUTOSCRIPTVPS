@@ -13,6 +13,7 @@ Skrip otomatis untuk instalasi dan manajemen VPS (VPN Server) dengan berbagai la
     -   Xray Core (Vmess, Vless, Trojan, Shadowsocks) dengan WS dan gRPC (TLS & None-TLS)
     -   BadVPN (UDPGW)
     -   Nginx
+    -   **NoobzVPN** (Port 80 & 443)
 -   **Manajemen via Telegram:** Kontrol VPS (cek status, restart, buat akun, ubah banner, dll) melalui bot Telegram.
 -   **Keamanan:** Hanya `OWNER_ID` yang bisa mengakses menu bot.
 -   **Stabilitas:** Skrip tidak bergantung pada link download eksternal yang bisa error 404.
