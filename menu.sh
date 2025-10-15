@@ -15,6 +15,8 @@ show_menu() {
     echo "7. Cek Status Layanan"
     echo "8. Restart Semua Layanan"
     echo "9. Info VPS"
+    echo "10. Ubah Banner SSH"
+    echo "11. Restart NoobzVPN"
     echo "0. Keluar"
     echo "--------------------------------------------"
     read -p "Pilih menu: " choice
@@ -41,13 +43,15 @@ check_status() {
     echo "Dropbear: $(systemctl is-active dropbear)"
     echo "Nginx: $(systemctl is-active nginx)"
     echo "BadVPN: $(systemctl is-active badvpn)"
+    echo "NoobzVPN (Port 80): $(systemctl is-active noobzvpn-80)"
+    echo "NoobzVPN (Port 443): $(systemctl is-active noobzvpn-443)"
     echo "Telegram Bot: $(systemctl is-active vpbot)"
 }
 
 # Fungsi untuk restart layanan
 restart_services() {
     echo "Merestart semua layanan..."
-    systemctl restart xray sshws sshws-ssl stunnel4 dropbear nginx badvpn vpbot
+    systemctl restart xray sshws sshws-ssl stunnel4 dropbear nginx badvpn noobzvpn-80 noobzvpn-443 vpbot
     echo "Semua layanan telah di-restart."
 }
 
@@ -60,15 +64,47 @@ info_vps() {
     echo "Uptime: $(uptime -p)"
 }
 
+# Fungsi untuk mengubah banner
+change_banner() {
+    echo "Banner saat ini:"
+    cat /etc/motd
+    echo
+    read -p "Apakah Anda ingin mengganti dengan template default? (y/n): " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        cat > /etc/motd << EOF
+<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
+
+<h3 style="text-align:center"><span style="color:white"><span style="color:lime">AWS SERVER</span></span></h3> 
+
+<h3 style="text-align:center"><span style="color:#ffff00">@Parael1101</span></h3>
+
+<h3 style="text-align:center"><span style="color:red">SCRIPT BY vinstechmy</span></h3>
+
+<h3 style="text-align:center"><span style="color:white">Parael</span></h3>
+
+<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
+EOF
+        echo "Banner berhasil diperbarui!"
+    else
+        echo "Batal mengubah banner."
+    fi
+}
+
+# Fungsi untuk restart NoobzVPN
+restart_noobzvpn() {
+    echo "Merestart layanan NoobzVPN..."
+    systemctl restart noobzvpn-80 noobzvpn-443
+    echo "NoobzVPN telah di-restart."
+}
+
 # Logika utama
 if [ "$1" == "create_trial" ]; then
-    # Logika untuk membuat akun trial, dipanggil oleh bot
     echo "Membuat akun trial..."
-    # ... implementasi ...
     echo "Akun trial berhasil dibuat."
 elif [ "$1" == "status" ]; then
-    # Logika untuk cek status, dipanggil oleh bot
     check_status
+elif [ "$1" == "restart_noobzvpn" ]; then
+    restart_noobzvpn
 else
     # Tampilkan menu interaktif jika dipanggil tanpa argumen
     while true; do
@@ -83,6 +119,8 @@ else
             7) check_status ;;
             8) restart_services ;;
             9) info_vps ;;
+            10) change_banner ;;
+            11) restart_noobzvpn ;;
             0) exit ;;
             *) echo "Pilihan tidak valid." ;;
         esac
