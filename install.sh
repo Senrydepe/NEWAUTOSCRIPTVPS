@@ -39,7 +39,7 @@ print_color "GREEN" "OS Terdeteksi: $OS $VERSION_ID"
 # Input Domain
 clear
 print_color "YELLOW" "============================================"
-print_color "YELLOW" "      VPS AUTO-SCRIPT INSTALLER V2         "
+print_color "YELLOW" "      VPS AUTO-SCRIPT INSTALLER V3         "
 print_color "YELLOW" "============================================"
 echo
 read -p "$(echo -e ${GREEN}Masukkan Domain/Subdomain Anda: ${NC})" DOMAIN
@@ -67,7 +67,8 @@ apt-get update -y && apt-get upgrade -y
 
 # Install Dependencies
 print_color "YELLOW" "Menginstall dependensi..."
-apt-get install -y curl wget git unzip gnupg2 lsb-release nginx certbot python3-certbot-nginx socat netcat-openbsd cron jq build-essential
+# --- DIUBAH: HILANGKAN CERTBOT ---
+apt-get install -y curl wget git unzip gnupg2 lsb-release nginx socat netcat-openbsd cron jq build-essential
 
 # Set Domain di /etc/hosts
 sed -i "/127.0.0.1 localhost/c\127.0.0.1 localhost $DOMAIN" /etc/hosts
@@ -352,11 +353,33 @@ server {
 EOF
 nginx -t && systemctl restart nginx
 
-# Install SSL
-print_color "YELLOW" "Meminta sertifikat SSL untuk $DOMAIN..."
-systemctl stop nginx
-certbot certonly --standalone -d $DOMAIN --non-interactive --agree-tos --email admin@$DOMAIN -m admin@$DOMAIN
-systemctl start nginx
+# --- DIUBAH: INSTALLASI SSL MENGGUNAKAN ACME.SH ---
+# Install acme.sh
+print_color "YELLOW" "Menginstall acme.sh untuk SSL..."
+curl https://get.acme.sh | sh -s email=admin@$DOMAIN
+
+# Source .bashrc untuk membuat perintah 'acme.sh' tersedia
+source ~/.bashrc
+
+# Hentikan layanan yang menggunakan port 80 sementara
+print_color "YELLOW" "Menghentikan layanan port 80 untuk verifikasi SSL..."
+systemctl stop nginx sshws noobzvpn-80
+
+# Dapatkan sertifikat SSL dengan acme.sh dalam mode standalone
+print_color "YELLOW" "Mendapatkan sertifikat SSL untuk $DOMAIN..."
+~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone -k ec-256
+
+# Install sertifikat ke folder yang lebih mudah diakses
+print_color "YELLOW" "Menginstall sertifikat SSL..."
+~/.acme.sh/acme.sh --install-cert -d $DOMAIN --ecc \
+    --fullchain-file /etc/xray/xray.crt \
+    --key-file /etc/xray/xray.key \
+    --reloadcmd "systemctl restart xray"
+
+# Jalankan kembali layanan yang dihentikan
+print_color "YELLOW" "Menjalankan kembali layanan port 80..."
+systemctl start nginx sshws noobzvpn-80
+# --- SELESAI MODIFIKASI SSL ---
 
 # Membuat Konfigurasi Xray
 print_color "YELLOW" "Membuat konfigurasi Xray..."
@@ -366,18 +389,18 @@ cat > /etc/xray/config.json << EOF
 {
     "log": { "loglevel": "warning" },
     "inbounds": [
-        { "listen": "0.0.0.0", "port": 443, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "wsSettings": { "path": "/vless" } }, "tag": "Vless-WSS-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "wsSettings": { "path": "/vmess" } }, "tag": "Vmess-WSS-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "wsSettings": { "path": "/trojan" } }, "tag": "Trojan-WSS-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "wsSettings": { "path": "/ss" } }, "tag": "SS-WSS-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "wsSettings": { "path": "/vless" } }, "tag": "Vless-WSS-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "wsSettings": { "path": "/vmess" } }, "tag": "Vmess-WSS-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "wsSettings": { "path": "/trojan" } }, "tag": "Trojan-WSS-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "wsSettings": { "path": "/ss" } }, "tag": "SS-WSS-TLS" },
         { "listen": "0.0.0.0", "port": 80, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vless" } }, "tag": "Vless-WS-NoneTLS" },
         { "listen": "0.0.0.0", "port": 80, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vmess" } }, "tag": "Vmess-WS-NoneTLS" },
         { "listen": "0.0.0.0", "port": 80, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/trojan" } }, "tag": "Trojan-WS-NoneTLS" },
         { "listen": "0.0.0.0", "port": 80, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/ss" } }, "tag": "SS-WS-NoneTLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "grpcSettings": { "serviceName": "vless-grpc" } }, "tag": "Vless-gRPC-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "grpcSettings": { "serviceName": "vmess-grpc" } }, "tag": "Vmess-gRPC-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "grpcSettings": { "serviceName": "trojan-grpc" } }, "tag": "Trojan-gRPC-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "grpcSettings": { "serviceName": "ss-grpc" } }, "tag": "SS-gRPC-TLS" }
+        { "listen": "0.0.0.0", "port": 443, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "grpcSettings": { "serviceName": "vless-grpc" } }, "tag": "Vless-gRPC-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "grpcSettings": { "serviceName": "vmess-grpc" } }, "tag": "Vmess-gRPC-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "grpcSettings": { "serviceName": "trojan-grpc" } }, "tag": "Trojan-gRPC-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "grpcSettings": { "serviceName": "ss-grpc" } }, "tag": "SS-gRPC-TLS" }
     ],
     "outbounds": [{ "protocol": "freedom" }]
 }
@@ -403,8 +426,6 @@ ufw allow 7100:7900/udp
 ufw --force enable
 
 # --- FUNGSI UNTUK MENANAMKAN SCRIPT ---
-# Script ini akan membuat file menu.sh dan bot.py langsung di VPS
-
 install_menu_script() {
     print_color "YELLOW" "Membuat Menu VPS..."
     cat > /usr/local/bin/menu << 'MENU_EOF'
