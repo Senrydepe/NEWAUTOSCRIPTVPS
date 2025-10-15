@@ -62,7 +62,6 @@ apt-get update -y && apt-get upgrade -y
 
 # Install Dependencies
 print_color "YELLOW" "Menginstall dependensi..."
-# --- DITAMBAHKAN: jq untuk manipulasi JSON ---
 apt-get install -y curl wget git unzip gnupg2 lsb-release nginx certbot python3-certbot-nginx socat netcat-openbsd cron jq build-essential
 
 # Set Domain di /etc/hosts
@@ -133,10 +132,8 @@ WantedBy=multi-user.target
 EOF
 systemctl enable badvpn && systemctl start badvpn
 
-# --- MODIFIKASI SSH WEBSOCKET: KODE SUMBER DITANAM ---
 # Install SSH Websocket (Metode Paling Andal: Kode Sumber Ditanam)
 print_color "YELLOW" "Menginstall SSH Websocket dari kode sumber yang ditanam..."
-# Install Go compiler jika belum ada
 if ! command -v go &> /dev/null; then
     print_color "YELLOW" "Menginstall Go compiler..."
     GO_VERSION="1.21.6"
@@ -146,12 +143,9 @@ if ! command -v go &> /dev/null; then
     echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
     source /etc/profile
 fi
-
-# Buat direktori dan file kode sumber
 mkdir -p /tmp/sshws
 cat > /tmp/sshws/main.go << 'EOF'
 package main
-
 import (
     "io"
     "log"
@@ -159,7 +153,6 @@ import (
     "os"
     "strings"
 )
-
 func handleConnection(clientConn net.Conn, sshAddr string) {
     sshConn, err := net.Dial("tcp", sshAddr)
     if err != nil {
@@ -168,33 +161,26 @@ func handleConnection(clientConn net.Conn, sshAddr string) {
         return
     }
     defer sshConn.Close()
-
     go func() {
         _, _ = io.Copy(sshConn, clientConn)
     }()
     _, _ = io.Copy(clientConn, sshConn)
 }
-
 func main() {
     sshAddr := "127.0.0.1:22"
     listenPort := "80"
-
     if addr := os.Getenv("SSH_ADDR"); addr != "" {
         sshAddr = addr
     }
-
     if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "-p=") {
         listenPort = strings.TrimPrefix(os.Args[1], "-p=")
     }
-
     listener, err := net.Listen("tcp", ":"+listenPort)
     if err != nil {
         log.Fatalf("Failed to listen on port %s: %v", listenPort, err)
     }
     defer listener.Close()
-
     log.Printf("SSH tunnel listening on port %s, forwarding to %s", listenPort, sshAddr)
-
     for {
         clientConn, err := listener.Accept()
         if err != nil {
@@ -205,31 +191,23 @@ func main() {
     }
 }
 EOF
-
-# Kompilasi kode sumber
 cd /tmp/sshws
 /usr/local/go/bin/go build -o sshws
 mkdir -p /usr/local/bin/sshws
 mv sshws /usr/local/bin/sshws/sshws
 chmod +x /usr/local/bin/sshws/sshws
-# Bersihkan
 cd /root
 rm -rf /tmp/sshws
-# --- SELESAI MODIFIKASI SSH WEBSOCKET ---
-
-# Buat service untuk SSH Websocket (Port 80)
 cat > /etc/systemd/system/sshws.service << EOF
 [Unit]
 Description=SSH Websocket Service
 After=network.target
-
 [Service]
 Type=simple
 User=root
 ExecStart=/usr/local/bin/sshws/sshws -p 80
 Restart=always
 RestartSec=3
-
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -241,56 +219,43 @@ cat > /etc/systemd/system/sshws-ssl.service << EOF
 [Unit]
 Description=SSH SSL Websocket Service
 After=network.target
-
 [Service]
 Type=simple
 User=root
 ExecStart=/usr/local/bin/sshws/sshws -p 443
 Restart=always
 RestartSec=3
-
 [Install]
 WantedBy=multi-user.target
 EOF
 systemctl enable sshws-ssl && systemctl start sshws-ssl
 
-# --- MODIFIKASI FINAL: TANAMKAN KODE SUMBER NOOBZVPN LANGSUNG ---
 # Install NoobzVPN (Metode Paling Andal: Kode Sumber Ditanam)
 print_color "YELLOW" "Menginstall NoobzVPN dari kode sumber yang ditanam..."
-# Go compiler sudah terinstall dari langkah sebelumnya
-
-# Buat direktori dan file kode sumber
 mkdir -p /tmp/noobzvpn
 cat > /tmp/noobzvpn/go.mod << 'EOF'
 module noobzvpn
-
 go 1.19
-
 require (
     github.com/gin-gonic/gin v1.9.1
     github.com/gorilla/websocket v1.5.0
 )
 EOF
-
 cat > /tmp/noobzvpn/main.go << 'EOF'
 package main
-
 import (
     "fmt"
     "log"
     "net/http"
     "os"
-
     "github.com/gin-gonic/gin"
     "github.com/gorilla/websocket"
 )
-
 var upgrader = websocket.Upgrader{
     CheckOrigin: func(r *http.Request) bool {
         return true
     },
 }
-
 func handleWebSocket(c *gin.Context) {
     conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
     if err != nil {
@@ -298,7 +263,6 @@ func handleWebSocket(c *gin.Context) {
         return
     }
     defer conn.Close()
-
     for {
         messageType, p, err := conn.ReadMessage()
         if err != nil {
@@ -313,7 +277,6 @@ func handleWebSocket(c *gin.Context) {
         }
     }
 }
-
 func main() {
     port := "8080"
     if len(os.Args) > 1 {
@@ -323,68 +286,50 @@ func main() {
             port = os.Args[2][1:]
         }
     }
-
     gin.SetMode(gin.ReleaseMode)
     r := gin.Default()
-
     r.GET("/ws", handleWebSocket)
     r.GET("/", func(c *gin.Context) {
         c.String(200, "NoobzVPN is running")
     })
-
     fmt.Printf("NoobzVPN listening on port %s\n", port)
     log.Fatal(r.Run(":" + port))
 }
 EOF
-
-# Kompilasi kode sumber
 cd /tmp/noobzvpn
 /usr/local/go/bin/go mod tidy
 /usr/local/go/bin/go build -o noobzvpn
 mkdir -p /usr/local/bin
 mv noobzvpn /usr/local/bin/noobzvpn
 chmod +x /usr/local/bin/noobzvpn
-
-# Bersihkan
 cd /root
 rm -rf /tmp/noobzvpn
-# --- SELESAI MODIFIKASI FINAL ---
-
-# Buat service untuk NoobzVPN Port 80
 cat > /etc/systemd/system/noobzvpn-80.service << EOF
 [Unit]
 Description=NoobzVPN Port 80 Service
 After=network.target
-
 [Service]
 Type=simple
 User=root
 ExecStart=/usr/local/bin/noobzvpn -http-addr :80
 Restart=always
 RestartSec=3
-
 [Install]
 WantedBy=multi-user.target
 EOF
-
-# Buat service untuk NoobzVPN Port 443
 cat > /etc/systemd/system/noobzvpn-443.service << EOF
 [Unit]
 Description=NoobzVPN Port 443 Service
 After=network.target
-
 [Service]
 Type=simple
 User=root
 ExecStart=/usr/local/bin/noobzvpn -https-addr :443
 Restart=always
 RestartSec=3
-
 [Install]
 WantedBy=multi-user.target
 EOF
-
-# Enable dan start layanan NoobzVPN
 systemctl daemon-reload
 systemctl enable noobzvpn-80 noobzvpn-443
 systemctl start noobzvpn-80 noobzvpn-443
@@ -396,12 +341,9 @@ cat > /etc/nginx/sites-available/default << EOF
 server {
     listen 81;
     listen [::]:81;
-    
     server_name $DOMAIN;
-    
     root /var/www/html;
     index index.html index.htm index.nginx-debian.html;
-    
     location / {
         try_files \$uri \$uri/ =404;
     }
@@ -417,115 +359,28 @@ systemctl start nginx
 
 # Membuat Konfigurasi Xray
 print_color "YELLOW" "Membuat konfigurasi Xray..."
-# Generate UUID
 UUID=$(cat /proc/sys/kernel/random/uuid)
-
-# Buat direktori jika belum ada
 mkdir -p /etc/xray
-
-# Buat config.json
 cat > /etc/xray/config.json << EOF
 {
     "log": { "loglevel": "warning" },
     "inbounds": [
-        {
-            "listen": "0.0.0.0", "port": 443, "protocol": "vless",
-            "settings": { "clients": [], "decryption": "none" },
-            "streamSettings": {
-                "network": "ws", "security": "tls",
-                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
-                "wsSettings": { "path": "/vless" }
-            }, "tag": "Vless-WSS-TLS"
-        },
-        {
-            "listen": "0.0.0.0", "port": 443, "protocol": "vmess",
-            "settings": { "clients": [] },
-            "streamSettings": {
-                "network": "ws", "security": "tls",
-                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
-                "wsSettings": { "path": "/vmess" }
-            }, "tag": "Vmess-WSS-TLS"
-        },
-        {
-            "listen": "0.0.0.0", "port": 443, "protocol": "trojan",
-            "settings": { "clients": [] },
-            "streamSettings": {
-                "network": "ws", "security": "tls",
-                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
-                "wsSettings": { "path": "/trojan" }
-            }, "tag": "Trojan-WSS-TLS"
-        },
-        {
-            "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks",
-            "settings": { "clients": [] },
-            "streamSettings": {
-                "network": "ws", "security": "tls",
-                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
-                "wsSettings": { "path": "/ss" }
-            }, "tag": "SS-WSS-TLS"
-        },
-        {
-            "listen": "0.0.0.0", "port": 80, "protocol": "vless",
-            "settings": { "clients": [], "decryption": "none" },
-            "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vless" } }, "tag": "Vless-WS-NoneTLS"
-        },
-        {
-            "listen": "0.0.0.0", "port": 80, "protocol": "vmess",
-            "settings": { "clients": [] },
-            "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vmess" } }, "tag": "Vmess-WS-NoneTLS"
-        },
-        {
-            "listen": "0.0.0.0", "port": 80, "protocol": "trojan",
-            "settings": { "clients": [] },
-            "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/trojan" } }, "tag": "Trojan-WS-NoneTLS"
-        },
-        {
-            "listen": "0.0.0.0", "port": 80, "protocol": "shadowsocks",
-            "settings": { "clients": [] },
-            "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/ss" } }, "tag": "SS-WS-NoneTLS"
-        },
-        {
-            "listen": "0.0.0.0", "port": 443, "protocol": "vless",
-            "settings": { "clients": [], "decryption": "none" },
-            "streamSettings": {
-                "network": "grpc", "security": "tls",
-                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
-                "grpcSettings": { "serviceName": "vless-grpc" }
-            }, "tag": "Vless-gRPC-TLS"
-        },
-        {
-            "listen": "0.0.0.0", "port": 443, "protocol": "vmess",
-            "settings": { "clients": [] },
-            "streamSettings": {
-                "network": "grpc", "security": "tls",
-                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
-                "grpcSettings": { "serviceName": "vmess-grpc" }
-            }, "tag": "Vmess-gRPC-TLS"
-        },
-        {
-            "listen": "0.0.0.0", "port": 443, "protocol": "trojan",
-            "settings": { "clients": [] },
-            "streamSettings": {
-                "network": "grpc", "security": "tls",
-                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
-                "grpcSettings": { "serviceName": "trojan-grpc" }
-            }, "tag": "Trojan-gRPC-TLS"
-        },
-        {
-            "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks",
-            "settings": { "clients": [] },
-            "streamSettings": {
-                "network": "grpc", "security": "tls",
-                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
-                "grpcSettings": { "serviceName": "ss-grpc" }
-            }, "tag": "SS-gRPC-TLS"
-        }
+        { "listen": "0.0.0.0", "port": 443, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "wsSettings": { "path": "/vless" } }, "tag": "Vless-WSS-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "wsSettings": { "path": "/vmess" } }, "tag": "Vmess-WSS-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "wsSettings": { "path": "/trojan" } }, "tag": "Trojan-WSS-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "wsSettings": { "path": "/ss" } }, "tag": "SS-WSS-TLS" },
+        { "listen": "0.0.0.0", "port": 80, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vless" } }, "tag": "Vless-WS-NoneTLS" },
+        { "listen": "0.0.0.0", "port": 80, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vmess" } }, "tag": "Vmess-WS-NoneTLS" },
+        { "listen": "0.0.0.0", "port": 80, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/trojan" } }, "tag": "Trojan-WS-NoneTLS" },
+        { "listen": "0.0.0.0", "port": 80, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/ss" } }, "tag": "SS-WS-NoneTLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "grpcSettings": { "serviceName": "vless-grpc" } }, "tag": "Vless-gRPC-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "grpcSettings": { "serviceName": "vmess-grpc" } }, "tag": "Vmess-gRPC-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "grpcSettings": { "serviceName": "trojan-grpc" } }, "tag": "Trojan-gRPC-TLS" },
+        { "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] }, "grpcSettings": { "serviceName": "ss-grpc" } }, "tag": "SS-gRPC-TLS" }
     ],
     "outbounds": [{ "protocol": "freedom" }]
 }
 EOF
-
-# Restart Xray
 systemctl restart xray
 
 # Firewall
@@ -554,16 +409,13 @@ wget -O /usr/local/bin/menu "https://raw.githubusercontent.com/Senrydepe/NEWAUTO
 print_color "YELLOW" "Menginstall Bot Telegram..."
 apt-get install -y python3 python3-pip
 pip3 install python-telegram-bot --upgrade
-
 mkdir -p /etc/vpbot
 cat > /etc/vpbot/config.ini << EOF
 [bot]
 token = $BOT_TOKEN
 owner_id = $OWNER_ID
 EOF
-
 wget -O /etc/vpbot/bot.py "https://raw.githubusercontent.com/Senrydepe/NEWAUTOSCRIPTVPS/main/bot.py" && chmod +x /etc/vpbot/bot.py
-
 cat > /etc/systemd/system/vpbot.service << EOF
 [Unit]
 Description=VPS Telegram Bot
@@ -578,34 +430,33 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-
 systemctl daemon-reload
 systemctl enable vpbot
 systemctl start vpbot
 
-# --- DITAMBAHKAN: BUAT FILE DATABASE AKUN ---
+# --- DITAMBAHKAN: BUAT FILE KONFIGURASI VPS ---
+print_color "YELLOW" "Membuat file konfigurasi VPS..."
+IP_VPS=$(curl -s ipinfo.io/ip)
+cat > /etc/vps.conf << EOF
+DOMAIN="$DOMAIN"
+IP_VPS="$IP_VPS"
+EOF
+# --- SELESAI ---
+
 # Membuat file untuk menyimpan data akun
 print_color "YELLOW" "Membuat database akun..."
 touch /etc/xray/akun.txt
-# --- SELESAI ---
 
-# --- DITAMBAHKAN: PASANG BANNER AWAL ---
 # Membuat Banner SSH
 print_color "YELLOW" "Menginstall Banner SSH..."
 cat > /etc/motd << EOF
 <h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
-
 <h3 style="text-align:center"><span style="color:white"><span style="color:lime">AWS SERVER</span></span></h3> 
-
 <h3 style="text-align:center"><span style="color:#ffff00">@Parael1101</span></h3>
-
 <h3 style="text-align:center"><span style="color:red">SCRIPT BY vinstechmy</span></h3>
-
 <h3 style="text-align:center"><span style="color:white">Parael</span></h3>
-
 <h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
 EOF
-# --- SELESAI MENAMBAHKAN BANNER ---
 
 # Menyimpan informasi akun
 cat > /root/akun.txt << EOF
