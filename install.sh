@@ -1,1202 +1,491 @@
 #!/bin/bash
 
-# GAGAL: Hentikan script jika ada error
-set -e
+# Input domain, bot token, admin ID sebelum install
+read -p "Masukkan domain Anda (contoh: jakarta.parael.me): " DOMAIN
+read -p "Masukkan Telegram Bot Token: " BOT_TOKEN
+read -p "Masukkan Telegram Admin ID: " ADMIN_ID
 
-# Warna untuk output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
+CONFIG_FILE="/etc/auto-xray-config.conf"
+echo "DOMAIN=$DOMAIN" > $CONFIG_FILE
+echo "BOT_TOKEN=$BOT_TOKEN" >> $CONFIG_FILE
+echo "ADMIN_ID=$ADMIN_ID" >> $CONFIG_FILE
 
-# Fungsi untuk mencetak teks berwarna
-print_color() {
-    printf "${!1}%s${NC}\n" "$2"
-}
+source $CONFIG_FILE
 
-# Cek root
-if [ "$(id -u)" -ne 0 ]; then
-   print_color "RED" "Skrip ini harus dijalankan sebagai root!" >&2
+NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
+XRAY_CONF="/usr/local/etc/xray/config.json"
+ACME_SH="$HOME/.acme.sh/acme.sh"
+XRAY_SERVICE="xray"
+
+if [[ $EUID -ne 0 ]]; then
+   echo "Jalankan script sebagai root!"
    exit 1
 fi
 
-# --- DETEKSI OS YANG LEBIH BAIK DAN UNIVERSAL ---
-if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    OS=$ID
-else
-    print_color "RED" "Tidak dapat mendeteksi OS. File /etc/os-release tidak ditemukan."
-    exit 1
-fi
-
-OS=$(echo "$OS" | tr '[:upper:]' '[:lower:]')
-
-if [[ "$OS" != "debian" && "$OS" != "ubuntu" ]]; then
-    print_color "RED" "OS tidak didukung: $OS. Script ini hanya untuk Debian dan Ubuntu."
-    exit 1
-fi
-
-print_color "GREEN" "OS Terdeteksi: $OS $VERSION_ID"
-
-# Input Domain
-clear
-print_color "YELLOW" "============================================"
-print_color "YELLOW" "   VPS AUTO-SCRIPT (REVERSE PROXY) V5     "
-print_color "YELLOW" "============================================"
-echo
-read -p "$(echo -e ${GREEN}Masukkan Domain/Subdomain Anda: ${NC})" DOMAIN
-if [ -z "$DOMAIN" ]; then
-    print_color "RED" "Domain tidak boleh kosong!"
-    exit 1
-fi
-
-# Input Bot Token & Owner ID
-read -p "$(echo -e ${GREEN}Masukkan Bot Token Telegram: ${NC})" BOT_TOKEN
-if [ -z "$BOT_TOKEN" ]; then
-    print_color "RED" "Bot Token tidak boleh kosong!"
-    exit 1
-fi
-
-read -p "$(echo -e ${GREEN}Masukkan Owner ID Telegram: ${NC})" OWNER_ID
-if [ -z "$OWNER_ID" ]; then
-    print_color "RED" "Owner ID tidak boleh kosong!"
-    exit 1
-fi
-
-# Update System
-print_color "YELLOW" "Memperbarui sistem..."
-apt-get update -y && apt-get upgrade -y
-
-# Install Dependencies
-print_color "YELLOW" "Menginstall dependensi..."
-apt-get install -y curl wget git unzip gnupg2 lsb-release nginx socat netcat-openbsd cron jq build-essential neofetch
-
-# Set Domain di /etc/hosts
-sed -i "/127.0.0.1 localhost/c\127.0.0.1 localhost $DOMAIN" /etc/hosts
-
-# Install Xray Core
-print_color "YELLOW" "Menginstall Xray Core..."
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-
-# Install & Configure Stunnel4
-print_color "YELLOW" "Menginstall Stunnel4..."
-apt-get install -y stunnel4 -qq
-cat > /etc/stunnel/stunnel.conf << EOF
-cert = /etc/stunnel/stunnel.pem
-client = no
-socket = a:SO_REUSEADDR=1
-socket = l:TCP_NODELAY=1
-socket = r:TCP_NODELAY=1
-
-[ssh-222]
-accept = 222
-connect = 127.0.0.1:22
-
-[ssh-777]
-accept = 777
-connect = 127.0.0.1:22
-EOF
-openssl genrsa -out key.pem 2048
-openssl req -new -x509 -key key.pem -out cert.pem -days 3650 -subj "/CN=$DOMAIN"
-cat key.pem cert.pem > /etc/stunnel/stunnel.pem
-sed -i 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4
-systemctl enable stunnel4 && systemctl restart stunnel4
-
-# Install Dropbear
-print_color "YELLOW" "Menginstall Dropbear..."
-apt-get install -y dropbear
-sed -i 's/NO_START=1/NO_START=0/g' /etc/default/dropbear
-sed -i 's/DROPBEAR_PORT=22/DROPBEAR_PORT="109 143"/g' /etc/default/dropbear
-sed -i 's/DROPBEAR_EXTRA_ARGS=/DROPBEAR_EXTRA_ARGS="-p 109 -p 143"/g' /etc/default/dropbear
-systemctl restart dropbear
-
-# FIX 1: Install BadVPN dengan cara yang lebih andal
-print_color "YELLOW" "Menginstall BadVPN..."
-# Install dependensi untuk BadVPN
-apt-get install -y libssl-dev libwrap0-dev libncurses5-dev
-cd /usr/local/src
-wget https://github.com/ambrop72/badvpn/archive/refs/tags/1.999.130.tar.gz
-tar -xvzf 1.999.130.tar.gz
-cd badvpn-1.999.130
-mkdir build && cd build
-# FIX: Gunakan cmake yang sudah diinstall oleh build-essential
-cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1
-# Cek apakah cmake berhasil
-if [ $? -ne 0 ]; then
-    print_color "RED" "Gagal menjalankan cmake. Harap periksa kembali dependensi sistem Anda."
-    exit 1
-fi
-make && make install
-cd /root && rm -rf /usr/local/src/badvpn*
-cat > /etc/systemd/system/badvpn.service << EOF
-[Unit]
-Description=BadVPN UDPGW Service
-After=network.target
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/badvpn-udpgw --listen-addr 127.0.0.1:7300
-Restart=always
-RestartSec=3
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload
-systemctl enable badvpn && systemctl start badvpn
-
-# FIX 2: Install Go dengan cara yang lebih andal
-print_color "YELLOW" "Menginstall Go compiler..."
-# Hapus instalasi Go lama jika ada
-rm -rf /usr/local/go
-# Download dan install Go versi terbaru
-GO_VERSION="1.22.4"
-wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
-tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
-# Set PATH untuk sesi script ini dan sesi berikutnya
-export PATH=$PATH:/usr/local/go/bin
-echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
-source /etc/profile
-
-# Install SSH Websocket (Kode Sumber Ditanam)
-print_color "YELLOW" "Menginstall SSH Websocket dari kode sumber yang ditanam..."
-mkdir -p /tmp/sshws
-cat > /tmp/sshws/main.go << 'EOF'
-package main
-import (
-    "io"
-    "log"
-    "net"
-    "os"
-    "strings"
-)
-func handleConnection(clientConn net.Conn, sshAddr string) {
-    sshConn, err := net.Dial("tcp", sshAddr)
-    if err != nil {
-        log.Printf("Error connecting to SSH server: %v", err)
-        clientConn.Close()
-        return
-    }
-    defer sshConn.Close()
-    go func() {
-        _, _ = io.Copy(sshConn, clientConn)
-    }()
-    _, _ = io.Copy(clientConn, sshConn)
+install_dependencies() {
+  apt update && apt upgrade -y
+  apt install -y nginx curl unzip vnstat speedtest-cli
 }
-func main() {
-    sshAddr := "127.0.0.1:22"
-    listenPort := "8080"
-    if addr := os.Getenv("SSH_ADDR"); addr != "" {
-        sshAddr = addr
-    }
-    if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "-p=") {
-        listenPort = strings.TrimPrefix(os.Args[1], "-p=")
-    }
-    listener, err := net.Listen("tcp", ":"+listenPort)
-    if err != nil {
-        log.Fatalf("Failed to listen on port %s: %v", listenPort, err)
-    }
-    defer listener.Close()
-    log.Printf("SSH tunnel listening on port %s, forwarding to %s", listenPort, sshAddr)
-    for {
-        clientConn, err := listener.Accept()
-        if err != nil {
-            log.Printf("Error accepting connection: %v", err)
-            continue
-        }
-        go handleConnection(clientConn, sshAddr)
-    }
-}
-EOF
-cd /tmp/sshws
-# Gunakan Go yang baru diinstall
-/usr/local/go/bin/go build -o sshws
-mkdir -p /usr/local/bin/sshws
-mv sshws /usr/local/bin/sshws/sshws
-chmod +x /usr/local/bin/sshws/sshws
-cd /root
-rm -rf /tmp/sshws
-cat > /etc/systemd/system/sshws.service << EOF
-[Unit]
-Description=SSH Websocket Service
-After=network.target
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/sshws/sshws -p 8080
-Restart=always
-RestartSec=3
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload
-systemctl enable sshws && systemctl start sshws
 
-# Install NoobzVPN (Kode Sumber Ditanam)
-print_color "YELLOW" "Menginstall NoobzVPN dari kode sumber yang ditanam..."
-mkdir -p /tmp/noobzvpn
-cat > /tmp/noobzvpn/go.mod << 'EOF'
-module noobzvpn
-go 1.19
-require (
-    github.com/gin-gonic/gin v1.9.1
-    github.com/gorilla/websocket v1.5.0
-)
-EOF
-cat > /tmp/noobzvpn/main.go << 'EOF'
-package main
-import (
-    "fmt"
-    "log"
-    "net/http"
-    "os"
-    "github.com/gin-gonic/gin"
-    "github.com/gorilla/websocket"
-)
-var upgrader = websocket.Upgrader{
-    CheckOrigin: func(r *http.Request) bool {
-        return true
+install_acme() {
+  if ! command -v acme.sh &> /dev/null; then
+    curl https://get.acme.sh | sh
+    source ~/.bashrc
+  fi
+}
+
+issue_cert() {
+  $ACME_SH --issue -d "$DOMAIN" --standalone --force
+  $ACME_SH --install-cert -d "$DOMAIN" \
+    --key-file /etc/letsencrypt/live/$DOMAIN/privkey.pem \
+    --fullchain-file /etc/letsencrypt/live/$DOMAIN/fullchain.pem \
+    --reloadcmd "systemctl reload nginx"
+}
+
+install_xray() {
+  bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) install
+}
+
+config_xray_nginx() {
+  for i in {1..4}; do
+    UUIDS[i]=$(uuidgen)
+  done
+
+  cat > $XRAY_CONF <<EOF
+{
+  "log": { "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log", "loglevel": "warning" },
+  "inbounds": [
+    {
+      "port": 80,
+      "protocol": "http",
+      "settings": {},
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": { "path": "/ssh" }
+      },
+      "tag": "ssh-nontls"
     },
-}
-func handleWebSocket(c *gin.Context) {
-    conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-    if err != nil {
-        log.Println("WebSocket upgrade failed:", err)
-        return
-    }
-    defer conn.Close()
-    for {
-        messageType, p, err := conn.ReadMessage()
-        if err != nil {
-            log.Println("WebSocket read error:", err)
-            break
+    {
+      "port": 443,
+      "protocol": "vmess",
+      "settings": {
+        "clients": [{ "id": "${UUIDS[1]}", "alterId": 0 }]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": { "allowInsecure": false, "serverName": "$DOMAIN" },
+        "wsSettings": { "path": "/vmess" }
+      },
+      "tag": "vmess-tls"
+    },
+    {
+      "port": 80,
+      "protocol": "vmess",
+      "settings": {
+        "clients": [{ "id": "${UUIDS[2]}", "alterId": 0 }]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": { "path": "/vmess" }
+      },
+      "tag": "vmess-nontls"
+    },
+    {
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{ "id": "${UUIDS[3]}" }]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": { "allowInsecure": false, "serverName": "$DOMAIN" },
+        "wsSettings": { "path": "/vless" }
+      },
+      "tag": "vless-tls"
+    },
+    {
+      "port": 80,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{ "id": "${UUIDS[4]}" }]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": { "path": "/vless" }
+      },
+      "tag": "vless-nontls"
+    },
+    {
+      "port": 443,
+      "protocol": "trojan",
+      "settings": {
+        "clients": [{ "password": "trojanpass" }]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": { "allowInsecure": false, "serverName": "$DOMAIN" },
+        "wsSettings": { "path": "/trojan" }
+      },
+      "tag": "trojan-tls"
+    },
+    {
+      "port": 80,
+      "protocol": "trojan",
+      "settings": {
+        "clients": [{ "password": "trojanpass" }]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": { "path": "/trojan" }
+      },
+      "tag": "trojan-nontls"
+    },
+    {
+      "port": 80,
+      "protocol": "http",
+      "settings": {},
+      "tag": "noobzvpn-nontls"
+    },
+    {
+      "port": 443,
+      "protocol": "http",
+      "settings": {},
+      "streamSettings": {
+        "security": "tls",
+        "tlsSettings": {
+          "allowInsecure": false,
+          "alpn": ["http/1.1"],
+          "serverName": "$DOMAIN"
         }
-        log.Printf("WebSocket received: %s", p)
-        err = conn.WriteMessage(messageType, p)
-        if err != nil {
-            log.Println("WebSocket write error:", err)
-            break
-        }
+      },
+      "tag": "noobzvpn-tls"
     }
-}
-func main() {
-    port := "8880"
-    if len(os.Args) > 1 {
-        if os.Args[1] == "-http-addr" && len(os.Args) > 2 {
-            port = os.Args[2][1:]
-        } else if os.Args[1] == "-https-addr" && len(os.Args) > 2 {
-            port = os.Args[2][1:]
-        }
-    }
-    gin.SetMode(gin.ReleaseMode)
-    r := gin.Default()
-    r.GET("/ws", handleWebSocket)
-    r.GET("/", func(c *gin.Context) {
-        c.String(200, "NoobzVPN is running")
-    })
-    fmt.Printf("NoobzVPN listening on port %s\n", port)
-    log.Fatal(r.Run(":" + port))
+  ],
+  "outbounds": [ { "protocol": "freedom", "settings": {} } ]
 }
 EOF
-cd /tmp/noobzvpn
-# Gunakan Go yang baru diinstall
-/usr/local/go/bin/go mod tidy
-/usr/local/go/bin/go build -o noobzvpn
-mkdir -p /usr/local/bin
-mv noobzvpn /usr/local/bin/noobzvpn
-chmod +x /usr/local/bin/noobzvpn
-cd /root
-rm -rf /tmp/noobzvpn
-cat > /etc/systemd/system/noobzvpn-ws.service << EOF
-[Unit]
-Description=NoobzVPN Reverse Proxy Service
-After=network.target
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/noobzvpn -http-addr :8880
-Restart=always
-RestartSec=3
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload
-systemctl enable noobzvpn-ws && systemctl start noobzvpn-ws
 
-# --- KONFIGURASI NGINX SEBAGAI REVERSE PROXY ---
-print_color "YELLOW" "Mengkonfigurasi Nginx sebagai Reverse Proxy..."
-# FIX 3: Hentikan layanan yang mungkin bentrok port 80 sebelum memulai Nginx
-systemctl stop apache2 nginx 2>/dev/null || true
-systemctl disable apache2 nginx 2>/dev/null || true
-systemctl killall nginx 2>/dev/null || true
-
-systemctl start nginx
-cat > /etc/nginx/sites-available/default << EOF
+  cat > $NGINX_CONF <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
 
-    location /ssh-ws {
-        proxy_pass http://127.0.0.1:8080;
+    location /ssh {
+        proxy_pass http://127.0.0.1:80;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 86400;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
-
-    location /noobz {
-        proxy_pass http://127.0.0.1:8880;
+    location /vmess {
+        proxy_pass http://127.0.0.1:80;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 86400;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location /vless {
+        proxy_pass http://127.0.0.1:80;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location /trojan {
+        proxy_pass http://127.0.0.1:80;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location /noobzvpn {
+        proxy_pass http://127.0.0.1:80;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 }
 
 server {
-    listen 81;
-    listen [::]:81;
+    listen 443 ssl http2;
     server_name $DOMAIN;
-    root /var/www/html;
-    index index.html index.htm index.nginx-debian.html;
-    location / {
-        try_files \$uri \$uri/ =404;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    location /ssh {
+        proxy_pass http://127.0.0.1:443;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location /vmess {
+        proxy_pass http://127.0.0.1:443;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location /vless {
+        proxy_pass http://127.0.0.1:443;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location /trojan {
+        proxy_pass http://127.0.0.1:443;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location /noobzvpn {
+        proxy_pass http://127.0.0.1:443;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 }
 EOF
-# FIX 4: Cek konfigurasi Nginx sebelum me-restart
-nginx -t
-if [ $? -ne 0 ]; then
-    print_color "RED" "Konfigurasi Nginx bermasalah. Periksa kembali file /etc/nginx/sites-available/default."
-    exit 1
-fi
-systemctl restart nginx
 
-# --- INSTALLASI SSL MENGGUNAKAN ACME.SH MODE NGINX ---
-print_color "YELLOW" "Menginstall acme.sh untuk SSL..."
-curl https://get.acme.sh | sh -s email=admin@$DOMAIN
-source ~/.bashrc
-print_color "YELLOW" "Mendapatkan sertifikat SSL untuk $DOMAIN..."
-~/.acme.sh/acme.sh --issue -d $DOMAIN --nginx -k ec-256
-print_color "YELLOW" "Menginstall sertifikat SSL..."
-~/.acme.sh/acme.sh --install-cert -d $DOMAIN --ecc \
-    --fullchain-file /etc/xray/xray.crt \
-    --key-file /etc/xray/xray.key \
-    --reloadcmd "systemctl restart xray"
-# --- SELESAI MODIFIKASI SSL ---
-
-# Membuat Konfigurasi Xray
-print_color "YELLOW" "Membuat konfigurasi Xray..."
-UUID=$(cat /proc/sys/kernel/random/uuid)
-mkdir -p /etc/xray
-cat > /etc/xray/config.json << EOF
-{
-    "log": { "loglevel": "warning" },
-    "inbounds": [
-        { "listen": "0.0.0.0", "port": 443, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "wsSettings": { "path": "/vless" } }, "tag": "Vless-WSS-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "wsSettings": { "path": "/vmess" } }, "tag": "Vmess-WSS-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "wsSettings": { "path": "/trojan" } }, "tag": "Trojan-WSS-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "wsSettings": { "path": "/ss" } }, "tag": "SS-WSS-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "grpcSettings": { "serviceName": "vless-grpc" } }, "tag": "Vless-gRPC-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "grpcSettings": { "serviceName": "vmess-grpc" } }, "tag": "Vmess-gRPC-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "grpcSettings": { "serviceName": "trojan-grpc" } }, "tag": "Trojan-gRPC-TLS" },
-        { "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "grpcSettings": { "serviceName": "ss-grpc" } }, "tag": "SS-gRPC-TLS" }
-    ],
-    "outbounds": [{ "protocol": "freedom" }]
-}
-EOF
-systemctl restart xray
-
-# Firewall
-print_color "YELLOW" "Mengkonfigurasi Firewall (UFW)..."
-ufw disable
-ufw --force reset
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow ssh
-ufw allow 22/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw allow 81/tcp
-ufw allow 109/tcp
-ufw allow 143/tcp
-ufw allow 222/tcp
-ufw allow 777/tcp
-ufw allow 7100:7900/udp
-ufw --force enable
-
-# --- FUNGSI UNTUK MENANAMKAN SCRIPT ---
-install_menu_script() {
-    print_color "YELLOW" "Membuat Menu VPS..."
-    cat > /usr/local/bin/menu << 'MENU_EOF'
-#!/bin/bash
-
-# Baca konfigurasi VPS
-source /etc/vps.conf
-
-# Fungsi untuk menampilkan menu utama
-show_menu() {
-    clear
-    echo "============================================"
-    echo "           MENU VPS MANAGEMENT              "
-    echo "============================================"
-    echo "1. Buat Akun Trial"
-    echo "2. Buat Akun Premium"
-    echo "3. Hapus Akun"
-    echo "4. Daftar Akun"
-    echo "5. Lock Akun"
-    echo "6. Unlock Akun"
-    echo "7. Cek Status Layanan"
-    echo "8. Restart Semua Layanan"
-    echo "9. Info VPS"
-    echo "10. Ubah Banner SSH"
-    echo "11. Restart NoobzVPN"
-    echo "12. Perpanjang Akun"
-    echo "0. Keluar"
-    echo "--------------------------------------------"
-    read -p "Pilih menu: " choice
+  ln -sf $NGINX_CONF /etc/nginx/sites-enabled/
+  nginx -t && systemctl reload nginx
+  systemctl restart $XRAY_SERVICE
 }
 
-# Fungsi untuk menampilkan menu pembuatan akun
-show_create_menu() {
-    clear
-    echo "============================================"
-    echo "           PILIH LAYANAN AKUN            "
-    echo "============================================"
-    echo "1. SSH / Dropbear"
-    echo "2. VMess WS"
-    echo "3. Vless WS"
-    echo "4. Trojan WS"
-    echo "5. Shadowsocks WS"
-    echo "6. NoobzVPN"
-    echo "0. Kembali"
-    echo "--------------------------------------------"
-    read -p "Pilih layanan: " service_choice
+read_expiry_date() {
+  while true; do
+    read -p "Masukkan masa aktif (hari): " EXP_DAY
+    if [[ "$EXP_DAY" =~ ^[0-9]+$ ]]; then
+      EXP_DATE=$(date -d "+$EXP_DAY day" +"%b %d, %Y")
+      break
+    else
+      echo "Input angka valid!"
+    fi
+  done
 }
 
-# Fungsi untuk mencetak tampilan kotak
-print_box() {
-    local str="$1"
-    local len=${#str}
-    local total_width=50
-    local pad_len=$(( (total_width - len) / 2 ))
-    local padding=$(printf "%*s" "$pad_len" | tr ' ' " ")
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━"
-    printf "%s%s\n" "$padding" "$str"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━"
-}
+create_sshws_user() {
+  read -p "Masukkan username SSH WS: " USER
+  read -sp "Masukkan password: " PASS
+  echo
+  read_expiry_date
+  useradd -M -s /bin/false $USER 2>/dev/null
+  echo "$USER:$PASS" | chpasswd
 
-# Fungsi untuk membuat link VMess
-create_vmess_link() {
-    local remarks="$1"
-    local id="$2"
-    local host="$3"
-    local port="$4"
-    local path="$5"
-    local net="$6"
-    local tls="$7"
-    local host_header="$8"
-    local sni="$9"
+  cat <<EOF
 
-    local json="{ \"v\": \"2\", \"ps\": \"$remarks\", \"add\": \"$host\", \"port\": \"$port\", \"id\": \"$id\", \"aid\": \"0\", \"net\": \"$net\", \"path\": \"$path\", \"type\": \"none\", \"host\": \"$host_header\", \"tls\": \"$tls\" }"
-    echo "vmess://$(echo -n "$json" | base64 -w 0)"
-}
-
-# Fungsi untuk membuat link VLESS/Trojan/Shadowsocks (URL Scheme)
-create_url_scheme_link() {
-    local scheme="$1"
-    local user_part="$2"
-    local server_part="$3"
-    local params="$4"
-    local fragment="$5"
-    echo "${scheme}://${user_part}@${server_part}${params}#${fragment}"
-}
-
-# --- Fungsi Pembuat Detail Akun ---
-create_ssh_account_details() {
-    local username="$1"
-    local password="$2"
-    local expired_display="$3"
-    cat > "/var/www/html/ssh-$username.txt" <<EOF
-[SSH]
-Host = $DOMAIN
-Port SSH = 22, 444
-Port Dropbear = 109, 143, 443
-SSH WS = http://$DOMAIN/ssh-ws
-SSH SSL WS : https://$DOMAIN/ssh-ws
-Username = $username
-Password = $password
-Payload WS = GET /ssh-ws [protocol][crlf]Host: [host][crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
-Payload SSL WS = GET wss://bug.com/ [protocol][crlf]Host: $DOMAIN[crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
-EOF
-    local details="
-Username : $username
-Password : $password
-━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━
+            SSH ACCOUNT
+━━━━━━━━━━━━━━━━━━━━━━━
+Username : $USER
+Password : $PASS
+━━━━━━━━━━━━━━━━━━━━━━━
 Host : $DOMAIN
 OpenSSH : 22
 Dropbear : 109, 143
-SSH-WS : 80 (/ssh-ws)
-SSH-SSL-WS : 443 (/ssh-ws)
+SSH-WS : 80
+SSH-SSL-WS : 443
 SSL/TLS : 447, 777
 UDPGW : 7100-7300
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Link SSH Config : http://$DOMAIN:81/ssh-$username.txt
+━━━━━━━━━━━━━━━━━━━━━━━
+Link SSH Config : http://$DOMAIN:81/ssh-$USER.txt
 ━━━━━━━━━━━━━━━━━━━━━━━
 Payload WS
-GET /ssh-ws [protocol][crlf]Host: [host][crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
+GET / [crlf]Host: $DOMAIN[crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
 ━━━━━━━━━━━━━━━━━━━━━━━
-GET wss://bug.com/ [protocol][crlf]Host: $DOMAIN[crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Expired On : $expired_display
-"
-    print_box "SSH ACCOUNT"
-    echo -e "$details"
+GET wss://bug.com/ [crlf]Host: $DOMAIN[crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
+━━━━━━━━━━━━━━━━━━━━━━━
+Expired On : $EXP_DATE
+━━━━━━━━━━━━━━━━━━━━━━━
+EOF
 }
 
-create_vmess_account_details() {
-    local remarks="$1"
-    local uuid="$2"
-    local expired_display="$3"
-    local config_link="http://$DOMAIN:81/vmess-$remarks.txt"
-    local vmess_tls=$(create_vmess_link "VMESS_TLS_$remarks" "$uuid" "$DOMAIN" "443" "/vmess" "ws" "tls" "$DOMAIN" "$DOMAIN")
-    local vmess_grpc=$(create_vmess_link "VMESS_GRPC_$remarks" "$uuid" "$DOMAIN" "443" "vmess-grpc" "grpc" "tls" "$DOMAIN" "$DOMAIN")
-    cat > "/var/www/html/vmess-$remarks.txt" <<EOF
- $vmess_tls
- $vmess_grpc
-EOF
-    local details="
-Remarks : $remarks
-Domain : $DOMAIN
-Port TLS : 443
+create_vmess_user() {
+  read -p "Masukkan remarks VMess: " REMARKS
+  read_expiry_date
+  UUID=$(uuidgen)
+
+  LINK_TLS="vmess://$(echo -n "{"v":"2","ps":"$REMARKS-TLS","add":"$DOMAIN","port":"443","id":"$UUID","aid":"0","net":"ws","type":"none","host":"$DOMAIN","path":"/vmess","tls":"tls"}" | base64 -w 0)"
+  LINK_NONE_TLS="vmess://$(echo -n "{"v":"2","ps":"$REMARKS-NonTLS","add":"$DOMAIN","port":"80","id":"$UUID","aid":"0","net":"ws","type":"none","host":"$DOMAIN","path":"/vmess","tls":""}" | base64 -w 0)"
+  LINK_GRPC="vmess://$(echo -n "{"v":"2","ps":"$REMARKS-GRPC","add":"$DOMAIN","port":"443","id":"$UUID","aid":"0","net":"grpc","type":"none","host":"$DOMAIN","path":"vmess-grpc","tls":"tls","serviceName":"vmess-grpc"}" | base64 -w 0)"
+
+  cat <<EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━
+             VMESS ACCOUNT
+━━━━━━━━━━━━━━━━━━━━━━━
+Remarks   : $REMARKS
+Domain    : $DOMAIN
+Port TLS  : 443
+Port NonTLS : 80
 Port GRPC : 443
-id : $uuid
-alterId : 0
-Security : auto
-Network : ws/grpc
-Path : /vmess
-ServiceName : vmess-grpc
+ID        : $UUID
+AlterId   : 0
+Security  : auto
+Network   : ws/grpc
+Path      : /vmess
+ServiceName: vmess-grpc
 ━━━━━━━━━━━━━━━━━━━━━━━
-Link TLS : $vmess_tls
+Link TLS      : $LINK_TLS
+Link Non TLS  : $LINK_NONE_TLS
+Link GRPC     : $LINK_GRPC
 ━━━━━━━━━━━━━━━━━━━━━━━
-Link GRPC : $vmess_grpc
+Expired On   : $EXP_DATE
 ━━━━━━━━━━━━━━━━━━━━━━━
-Link Vmess Config : $config_link
-━━━━━━━━━━━━━━━━━━━━━━━
-Expired On : $expired_display
-"
-    print_box "VMESS ACCOUNT"
-    echo -e "$details"
+EOF
 }
 
-create_vless_account_details() {
-    local remarks="$1"
-    local uuid="$2"
-    local expired_display="$3"
-    local config_link="http://$DOMAIN:81/vless-$remarks.txt"
-    local vless_tls=$(create_url_scheme_link "vless" "$uuid" "$DOMAIN:443" "?type=ws&encryption=none&security=tls&host=$DOMAIN&path=/vless&allowInsecure=1&sni=$DOMAIN" "XRAY_VLESS_TLS_$remarks")
-    local vless_grpc=$(create_url_scheme_link "vless" "$uuid" "$DOMAIN:443" "?mode=gun&security=tls&encryption=none&type=grpc&serviceName=vless-grpc&sni=$DOMAIN" "VLESS_GRPC_$remarks")
-    cat > "/var/www/html/vless-$remarks.txt" <<EOF
- $vless_tls
- $vless_grpc
+create_vless_user() {
+  read -p "Masukkan remarks VLESS: " REMARKS
+  read_expiry_date
+  UUID=$(uuidgen)
+
+  LINK_TLS="vless://${UUID}@${DOMAIN}:443?type=ws&security=tls&host=${DOMAIN}&path=/vless&sni=${DOMAIN}#$REMARKS-TLS"
+  LINK_NONE_TLS="vless://${UUID}@${DOMAIN}:80?type=ws&security=none&host=${DOMAIN}&path=/vless#$REMARKS-NonTLS"
+  LINK_GRPC="vless://${UUID}@${DOMAIN}:443?mode=gun&security=tls&type=grpc&serviceName=vless-grpc&sni=${DOMAIN}#$REMARKS-GRPC"
+
+  cat <<EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━
+             VLESS ACCOUNT
+━━━━━━━━━━━━━━━━━━━━━━━
+Remarks         : $REMARKS
+Domain          : $DOMAIN
+Port TLS        : 443
+Port Non TLS    : 80
+Port GRPC       : 443
+ID              : $UUID
+Encryption      : none
+Network         : ws/grpc
+Path            : /vless
+ServiceName     : vless-grpc
+━━━━━━━━━━━━━━━━━━━━━━━
+Link TLS        : $LINK_TLS
+Link Non TLS    : $LINK_NONE_TLS
+Link GRPC       : $LINK_GRPC
+━━━━━━━━━━━━━━━━━━━━━━━
+Expired On     : $EXP_DATE
+━━━━━━━━━━━━━━━━━━━━━━━
 EOF
-    local details="
-Remarks : $remarks
-Domain : $DOMAIN
-port TLS : 443
-id : $uuid
-Network : ws/grpc
-Encryption : none
-Path : /vless
-Path : vless-grpc
-━━━━━━━━━━━━━━━━━━━━━━━
-Link TLS : $vless_tls
-━━━━━━━━━━━━━━━━━━━━━━━
-Link GRPC : $vless_grpc
-━━━━━━━━━━━━━━━━━━━━━━━
-Link Vless Config : $config_link
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Expired On : $expired_display
-"
-    print_box "VLESS ACCOUNT"
-    echo -e "$details"
 }
 
-create_trojan_account_details() {
-    local remarks="$1"
-    local uuid="$2"
-    local expired_display="$3"
-    local config_link="http://$DOMAIN:81/trojan-$remarks.txt"
-    local trojan_ws=$(create_url_scheme_link "trojan" "$uuid" "$DOMAIN:443" "?path=%2Ftrojan-ws&security=tls&host=$DOMAIN&type=ws&sni=$DOMAIN" "TROJAN_WS_$remarks")
-    local trojan_go=$(create_url_scheme_link "trojan-go" "$uuid" "$DOMAIN:443" "?path=%2Ftrojan-ws&security=tls&host=$DOMAIN&type=ws&sni=$DOMAIN" "TROJANGO_$remarks")
-    local trojan_grpc=$(create_url_scheme_link "trojan" "$uuid" "$DOMAIN:443" "?mode=gun&security=tls&type=grpc&serviceName=trojan-grpc&sni=$DOMAIN" "TROJAN_GRPC_$remarks")
-    cat > "/var/www/html/trojan-$remarks.txt" <<EOF
- $trojan_ws
- $trojan_go
- $trojan_grpc
-EOF
-    local details="
-Remarks : $remarks
-Host/IP : $DOMAIN
-port : 443
-Key : $uuid
-Network : ws/grpc
-Path : /trojan-ws
+create_trojan_user() {
+  read -p "Masukkan remarks Trojan: " REMARKS
+  read_expiry_date
+  PASSWORD=$(uuidgen)
+
+  LINK_WS="trojan://${PASSWORD}@${DOMAIN}:443?path=%2Ftrojan&security=tls&host=${DOMAIN}&type=ws&sni=${DOMAIN}#$REMARKS-WS"
+  LINK_GRPC="trojan://${PASSWORD}@${DOMAIN}:443?mode=gun&security=tls&type=grpc&serviceName=trojan-grpc&sni=${DOMAIN}#$REMARKS-GRPC"
+
+  cat <<EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━
+            TROJAN ACCOUNT
+━━━━━━━━━━━━━━━━━━━━━━━
+Remarks     : $REMARKS
+Host/IP     : $DOMAIN
+Port        : 443
+Password    : $PASSWORD
+Network     : ws/grpc
+Path        : /trojan
 ServiceName : trojan-grpc
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Link WS : $trojan_ws
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Link GO : $trojan_go
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Link GRPC : $trojan_grpc
 ━━━━━━━━━━━━━━━━━━━━━━━
-Link Trojan Config : $config_link
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Expired On : $expired_display
-"
-    print_box "TROJAN ACCOUNT"
-    echo -e "$details"
-}
-
-create_shadowsocks_account_details() {
-    local remarks="$1"
-    local uuid="$2"
-    local expired_display="$3"
-    local ss_method="aes-128-gcm"
-    local ss_payload_base64=$(echo -n "${ss_method}:${uuid}" | base64 -w 0)
-    local config_link_ws="http://$DOMAIN:81/sodosokws-$remarks.txt"
-    local config_link_grpc="http://$DOMAIN:81/sodosokgrpc-$remarks.txt"
-    local ss_ws_tls=$(create_url_scheme_link "ss" "$ss_payload_base64" "$DOMAIN:443" "?path=/ss-ws&security=tls&encryption=none&type=ws" "$remarks")
-    local ss_grpc_tls=$(create_url_scheme_link "ss" "$ss_payload_base64" "$DOMAIN:443" "?mode=gun&security=tls&encryption=none&type=grpc&serviceName=ss-grpc&sni=bug.com" "$remarks")
-    cat > "/var/www/html/sodosokws-$remarks.txt" <<EOF
- $ss_ws_tls
+Link WS     : $LINK_WS
+Link GRPC   : $LINK_GRPC
+━━━━━━━━━━━━━━━━━━━━━━━
+Expired On : $EXP_DATE
+━━━━━━━━━━━━━━━━━━━━━━━
 EOF
-    cat > "/var/www/html/sodosokgrpc-$remarks.txt" <<EOF
- $ss_grpc_tls
+}
+
+create_noobzvpn_user() {
+  read -p "Masukkan username NoobzVPN: " USER
+  read -sp "Masukkan password NoobzVPN: " PASS
+  echo
+  read_expiry_date
+
+  cat <<EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━
+           NOOBZVPN ACCOUNT
+━━━━━━━━━━━━━━━━━━━━━━━
+Username    : $USER
+Password    : $PASS
+Domain      : $DOMAIN
+Port TLS    : 443
+Port NonTLS : 80
+Port GRPC   : 443
+Network     : ws/grpc
+Path       : /noobzvpn
+ServiceName : noobzvpn-grpc
+━━━━━━━━━━━━━━━━━━━━━━━
+Autentikasi menggunakan username dan password seperti SSH
+Gunakan aplikasi NoobzVPN dengan konfigurasi ini.
+━━━━━━━━━━━━━━━━━━━━━━━
+Link Config (contoh): http://$DOMAIN:81/noobzvpn-$USER.txt
+━━━━━━━━━━━━━━━━━━━━━━━
+Expired On  : $EXP_DATE
+━━━━━━━━━━━━━━━━━━━━━━━
 EOF
-    local details="
-Remarks : $remarks
-Domain : $DOMAIN
-Port WS : 443
-Port GRPC : 443
-Password : $uuid
-Cipers : $ss_method
-Network : ws/grpc
-Path : /ss-ws
-ServiceName : ss-grpc
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Link WS TLS : $ss_ws_tls
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Link GRPC TLS : $ss_grpc_tls
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Link JSON WS : $config_link_ws
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Link JSON gRPC : $config_link_grpc
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Expired On : $expired_display
-"
-    print_box "SHADOWSOCKS ACCOUNT"
-    echo -e "$details"
 }
 
-create_noobzvpn_account_details() {
-    local username="$1"
-    local password="$2"
-    local expired_display="$3"
-    cat > "/var/www/html/noobzvpn-$username.txt" <<EOF
-[NoobzVPN]
-server = $DOMAIN
-port_http = 80 (/noobz)
-port_https = 443 (/noobz)
-username = $username
-password = $password
-EOF
-    local details="
-Username : $username
-Password : $password
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Server : $DOMAIN
-Port HTTP : 80 (/noobz)
-Port HTTPS : 443 (/noobz)
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Link Config : http://$DOMAIN:81/noobzvpn-$username.txt
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Expired On : $expired_display
-"
-    print_box "NOOBZVPN ACCOUNT"
-    echo -e "$details"
+show_menu() {
+  clear
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "    AUTO SCRIPT LIFETIME BY PARAEL"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "Domain: $DOMAIN"
+  echo "Bot Token: $BOT_TOKEN"
+  echo "Admin ID: $ADMIN_ID"
+  echo ""
+  echo "1) Create SSH WS User"
+  echo "2) Create VMess User"
+  echo "3) Create VLESS User"
+  echo "4) Create Trojan User"
+  echo "5) Create NoobzVPN User"
+  echo "6) Exit"
+  read -p "Pilih menu: " opt
+  case $opt in
+    1) create_sshws_user; read -p "ENTER to back" _; show_menu ;;
+    2) create_vmess_user; read -p "ENTER to back" _; show_menu ;;
+    3) create_vless_user; read -p "ENTER to back" _; show_menu ;;
+    4) create_trojan_user; read -p "ENTER to back" _; show_menu ;;
+    5) create_noobzvpn_user; read -p "ENTER to back" _; show_menu ;;
+    6) exit 0 ;;
+    *) show_menu ;;
+  esac
 }
 
-# --- Fungsi Utama Pembuatan Akun ---
-create_account() {
-    local account_type=$1
-    local duration_days=$2
-    
-    if [ -f /tmp/service_choice ]; then
-        service_choice=$(cat /tmp/service_choice)
-        rm -f /tmp/service_choice
-    else
-        show_create_menu
-    fi
-
-    local username="TR$(shuf -i 100-999 -n 1)"
-    if [ "$account_type" == "premium" ]; then
-        username="PR$(shuf -i 100-999 -n 1)"
-    fi
-    local password=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 10)
-    local expiry_date=$(date -d "$duration_days days" +"%Y-%m-%d")
-    local expired_display=$(date -d "$duration_days days" +"%b %d, %Y")
-    local uuid=$(cat /proc/sys/kernel/random/uuid)
-
-    echo "$username:$password:$expiry_date:$service_choice" >> /etc/xray/akun.txt
-
-    case $service_choice in
-        1)
-            useradd -M -s /bin/false -e "$expiry_date" "$username"
-            echo "$username:$password" | chpasswd
-            create_ssh_account_details "$username" "$password" "$expired_display"
-            ;;
-        2)
-            config_payload="{\"id\": \"$uuid\", \"email\": \"$username@$DOMAIN\"}"
-            jq --argjson new_client "$config_payload" '.inbounds[] | select(.tag=="Vmess-WSS-TLS").settings.clients += [$new_client]' /etc/xray/config.json > /tmp/xray.json && mv /tmp/xray.json /etc/xray/config.json
-            systemctl restart xray
-            create_vmess_account_details "$username" "$uuid" "$expired_display"
-            ;;
-        3)
-            config_payload="{\"id\": \"$uuid\", \"email\": \"$username@$DOMAIN\"}"
-            jq --argjson new_client "$config_payload" '.inbounds[] | select(.tag=="Vless-WSS-TLS").settings.clients += [$new_client]' /etc/xray/config.json > /tmp/xray.json && mv /tmp/xray.json /etc/xray/config.json
-            systemctl restart xray
-            create_vless_account_details "$username" "$uuid" "$expired_display"
-            ;;
-        4)
-            config_payload="{\"password\": \"$uuid\", \"email\": \"$username@$DOMAIN\"}"
-            jq --argjson new_client "$config_payload" '.inbounds[] | select(.tag=="Trojan-WSS-TLS").settings.clients += [$new_client]' /etc/xray/config.json > /tmp/xray.json && mv /tmp/xray.json /etc/xray/config.json
-            systemctl restart xray
-            create_trojan_account_details "$username" "$uuid" "$expired_display"
-            ;;
-        5)
-            config_payload="{\"method\": \"chacha20-ietf-poly1305\", \"password\": \"$uuid\", \"email\": \"$username@$DOMAIN\"}"
-            jq --argjson new_client "$config_payload" '.inbounds[] | select(.tag=="SS-WSS-TLS").settings.clients += [$new_client]' /etc/xray/config.json > /tmp/xray.json && mv /tmp/xray.json /etc/xray/config.json
-            systemctl restart xray
-            create_shadowsocks_account_details "$username" "$uuid" "$expired_display"
-            ;;
-        6)
-            create_noobzvpn_account_details "$username" "$password" "$expired_display"
-            ;;
-        0) return ;;
-        *) echo "Pilihan tidak valid." ;;
-    esac
-}
-
-# --- Fungsi Lainnya ---
-delete_account() {
-    read -p "Masukkan username yang akan dihapus: " username
-    if grep -q "^$username:" /etc/xray/akun.txt; then
-        service=$(grep "^$username:" /etc/xray/akun.txt | cut -d: -f4)
-        case $service in
-            ssh) userdel -f $username ;;
-            vmess|vless|trojan|shadowsocks)
-                uuid=$(grep "^$username:" /etc/xray/akun.txt | cut -d: -f2)
-                jq --arg uuid "$uuid" '(.inbounds[].settings.clients) |= map(select(.id != $uuid))' /etc/xray/config.json > /tmp/xray.json && mv /tmp/xray.json /etc/xray/config.json
-                systemctl restart xray
-                ;;
-        esac
-        sed -i "/^$username:/d" /etc/xray/akun.txt
-        echo "Akun $username berhasil dihapus."
-    else
-        echo "Akun $username tidak ditemukan."
-    fi
-}
-
-list_accounts() {
-    echo "------------------------------------"
-    echo "           DAFTAR AKUN PENGGUNA         "
-    echo "------------------------------------"
-    if [ ! -s /etc/xray/akun.txt ]; then
-        echo "Belum ada akun yang dibuat."
-        return
-    fi
-    printf "%-15s | %-15s | %-10s | %-12s\n" "Username" "Password/UUID" "Expiry" "Service"
-    echo "------------------------------------------------------------"
-    while IFS=':' read -r username pass expiry service; do
-        printf "%-15s | %-15s | %-10s | %-12s\n" "$username" "$pass" "$expiry" "$service"
-    done < /etc/xray/akun.txt
-}
-
-lock_account() {
-    read -p "Masukkan username yang akan dikunci: " username
-    if grep -q "^$username:" /etc/xray/akun.txt; then
-        new_pass=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-12)
-        sed -i "s/^$username:[^:]*/$username:$new_pass/" /etc/xray/akun.txt
-        service=$(grep "^$username:" /etc/xray/akun.txt | cut -d: -f4)
-        if [[ "$service" != "ssh" ]]; then
-            uuid=$(grep "^$username:" /etc/xray/akun.txt | cut -d: -f2)
-            jq --arg uuid "$uuid" --arg new_pass "$new_pass" '(.inbounds[].settings.clients) |= map(if .id == $uuid then .password = $new_pass else . end)' /etc/xray/config.json > /tmp/xray.json && mv /tmp/xray.json /etc/xray/config.json
-            systemctl restart xray
-        else
-            usermod -L $username
-        fi
-        echo "Akun $username berhasil dikunci."
-    else
-        echo "Akun $username tidak ditemukan."
-    fi
-}
-
-unlock_account() {
-    read -p "Masukkan username yang akan dibuka kuncinya: " username
-    if grep -q "^$username:" /etc/xray/akun.txt; then
-        usermod -U $username
-        echo "Akun $username telah dibuka. Silakan ubah password SSH jika diperlukan."
-        echo "Untuk akun Xray, silakan buat akun baru jika lupa password/UUID."
-    else
-        echo "Akun $username tidak ditemukan."
-    fi
-}
-
-renew_account() {
-    read -p "Masukkan username yang akan diperpanjang: " username
-    if grep -q "^$username:" /etc/xray/akun.txt; then
-        read -p "Perpanjang berapa hari? " days
-        new_expiry=$(date -d "$days days" +"%Y-%m-%d")
-        sed -i "s/^$username:[^:]*:[^:]*/$username:&:$new_expiry/" /etc/xray/akun.txt
-        echo "Akun $username berhasil diperpanjang hingga $new_expiry."
-    else
-        echo "Akun $username tidak ditemukan."
-    fi
-}
-
-check_status() {
-    echo "=== Status Layanan ==="
-    echo "Xray Core: $(systemctl is-active xray)"
-    echo "Nginx (Reverse Proxy): $(systemctl is-active nginx)"
-    echo "SSH Websocket (Internal): $(systemctl is-active sshws)"
-    echo "NoobzVPN (Internal): $(systemctl is-active noobzvpn-ws)"
-    echo "Stunnel4: $(systemctl is-active stunnel4)"
-    echo "Dropbear: $(systemctl is-active dropbear)"
-    echo "BadVPN: $(systemctl is-active badvpn)"
-    echo "Telegram Bot: $(systemctl is-active vpbot)"
-}
-
-restart_services() {
-    echo "Merestart semua layanan..."
-    systemctl restart xray nginx sshws noobzvpn-ws stunnel4 dropbear badvpn vpbot
-    echo "Semua layanan telah di-restart."
-}
-
-info_vps() {
-    echo "=== Info VPS ==="
-    echo "Hostname: $(hostname)"
-    echo "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d '"' -f 2)"
-    echo "IP Public: $(curl -s ipinfo.io/ip)"
-    echo "Uptime: $(uptime -p)"
-}
-
-change_banner() {
-    echo "Banner login saat ini menggunakan Neofetch."
-    echo "Untuk mengkustomisasi tampilan Neofetch, Anda bisa:"
-    echo "1. Buat file konfigurasi: mkdir -p ~/.config/neofetch && nano ~/.config/neofetch/config.conf"
-    echo "2. Kunjungi situs https://github.com/dylanaraps/neofetch/wiki/Customization untuk panduan konfigurasi."
-    echo
-    read -p "Apakah Anda ingin mereset konfigurasi Neofetch ke default? (y/n): " confirm
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        rm -f ~/.config/neofetch/config.conf
-        echo "Konfigurasi Neofetch telah direset ke default."
-        echo "Logout dan login kembali untuk melihat perubahannya."
-    else
-        echo "Batal mengubah konfigurasi."
-    fi
-}
-
-restart_noobzvpn() {
-    echo "Merestart layanan NoobzVPN..."
-    systemctl restart noobzvpn-ws
-    echo "NoobzVPN telah di-restart."
-}
-
-# --- Logika Utama ---
-if [ "$1" == "create_trial" ]; then
-    create_account "trial" 3
-elif [ "$1" == "create_premium" ]; then
-    create_account "premium" 30
-elif [ "$1" == "status" ]; then
-    check_status
-elif [ "$1" == "restart_noobzvpn" ]; then
-    restart_noobzvpn
-else
-    while true; do
-        show_menu
-        case $choice in
-            1) create_account "trial" 3 ;;
-            2) create_account "premium" 30 ;;
-            3) delete_account ;;
-            4) list_accounts ;;
-            5) lock_account ;;
-            6) unlock_account ;;
-            7) check_status ;;
-            8) restart_services ;;
-            9) info_vps ;;
-            10) change_banner ;;
-            11) restart_noobzvpn ;;
-            12) renew_account ;;
-            0) exit ;;
-            *) echo "Pilihan tidak valid." ;;
-        esac
-        read -p "Tekan Enter untuk melanjutkan..."
-    done
-fi
-MENU_EOF
-    chmod +x /usr/local/bin/menu
-}
-
-install_bot_script() {
-    print_color "YELLOW" "Menginstall Bot Telegram..."
-    apt-get install -y python3 python3-pip
-    pip3 install python-telegram-bot --upgrade
-    mkdir -p /etc/vpbot
-    cat > /etc/vpbot/config.ini << EOF
-[bot]
-token = $BOT_TOKEN
-owner_id = $OWNER_ID
-EOF
-    cat > /etc/vpbot/bot.py << 'BOT_EOF'
-import subprocess
-import logging
-import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
-import configparser
-
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-config = configparser.ConfigParser()
-config.read('/etc/vpbot/config.ini')
-BOT_TOKEN = config['bot']['token']
-OWNER_ID = int(config['bot']['owner_id'])
-
-def run_command(command):
-    try:
-        result = subprocess.run(command, shell=True, check=True, text=True, capture_output=True)
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        return f"Error: {e.stderr.strip()}"
-
-def start(update: Update, context: CallbackContext) -> None:
-    if update.effective_user.id != OWNER_ID:
-        update.message.reply_text("Maaf, Anda tidak memiliki izin untuk menggunakan bot ini.")
-        return
-    keyboard = [
-        [InlineKeyboardButton("➕ Buat Akun", callback_data='create_account_menu')],
-        [InlineKeyboardButton("🗑️ Hapus Akun", callback_data='delete_account'],
-        [InlineKeyboardButton("📋 Daftar Akun", callback_data='list_accounts'],
-        [InlineKeyboardButton("🔧 Cek Status Layanan", callback_data='status'],
-        [InlineKeyboardButton("🔄 Restart Semua Layanan", callback_data='restart_all'],
-        [InlineKeyboardButton("💻 Info VPS", callback_data='info_vps'],
-        [InlineKeyboardButton("🎨 Ubah Banner SSH", callback_data='change_banner'],
-        [InlineKeyboardButton("🔌 Restart NoobzVPN", callback_data='restart_noobzvpn'],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text('Halo, Boss! Pilih menu di bawah:', reply_markup=reply_markup)
-
-def button(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    if query.from_user.id != OWNER_ID:
-        query.answer("Maaf, Anda tidak memiliki izin.")
-        return
-    query.answer()
-
-    if query.data == 'create_account_menu':
-        keyboard = [
-            [InlineKeyboardButton("🧪 Buat Akun Trial", callback_data='create_trial'],
-            [InlineKeyboardButton("💳 Buat Akun Premium", callback_data='create_premium'],
-            [InlineKeyboardButton("⬅️ Kembali", callback_data='back_to_main'],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        query.edit_message_text(text='Pilih jenis akun:', reply_markup=reply_markup)
-    elif query.data in ['create_trial', 'create_premium']:
-        account_type = "trial" if query.data == 'create_trial' else "premium"
-        keyboard = [
-            [InlineKeyboardButton("SSH / Dropbear", callback_data=f'create_{account_type}_ssh'],
-            [InlineKeyboardButton("VMess WS", callback_data=f'create_{account_type}_vmess'],
-            [InlineKeyboardButton("Vless WS", callback_data=f'create_{account_type}_vless'],
-            [InlineKeyboardButton("Trojan WS", callback_data=f'create_{account_type}_trojan'],
-            [InlineKeyboardButton("Shadowsocks WS", callback_data=f'create_{account_type}_ss'],
-            [InlineKeyboardButton("NoobzVPN", callback_data=f'create_{account_type}_noobz'],
-            [InlineKeyboardButton("⬅️ Kembali", callback_data='create_account_menu'],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        query.edit_message_text(text=f'Pilih layanan untuk akun {account_type}:', reply_markup=reply_markup)
-    elif query.data.startswith('create_'):
-        parts = query.data.split('_')
-        account_type = parts[1]
-        service_map = {'ssh': '1', 'vmess': '2', 'vless': '3', 'trojan': '4', 'ss': '5', 'noobz': '6'}
-        service_name = parts[2]
-        service_choice = service_map.get(service_name, '0')
-
-        with open('/tmp/service_choice', 'w') as f:
-            f.write(service_choice)
-        
-        command = f'/usr/local/bin/menu create_{account_type}'
-        result = run_command(command)
-        
-        if os.path.exists('/tmp/service_choice'):
-            os.remove('/tmp/service_choice')
-            
-        messages = result.split('━━━━━━━━━━━━━━━━━━━━━━━━━')
-        query.edit_message_text(text=f"✅ Membuat akun {account_type} untuk layanan {service_name}...")
-        for msg_part in messages:
-            stripped_part = msg_part.strip()
-            if stripped_part:
-                formatted_message = f"━━━━━━━━━━━━━━━━━━━━━━━━━\n{stripped_part}"
-                try:
-                    context.bot.send_message(chat_id=update.effective_chat.id, text=f"```{formatted_message}```", parse_mode='MarkdownV2')
-                except Exception:
-                    context.bot.send_message(chat_id=update.effective_chat.id, text=formatted_message)
-    elif query.data == 'delete_account':
-        query.edit_message_text(text="Untuk menghapus akun, silakan gunakan menu 'menu' di terminal VPS dan pilih opsi 3.")
-    elif query.data == 'list_accounts':
-        result = run_command('/usr/local/bin/menu list_accounts')
-        query.edit_message_text(text=f"📋 <b>Daftar Akun:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
-    elif query.data == 'status':
-        result = run_command('/usr/local/bin/menu status')
-        query.edit_message(text=f"🔧 <b>Status Layanan:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
-    elif query.data == 'restart_all':
-        query.edit_message(text="🔄 Sedang merestart semua layanan...")
-        run_command('systemctl restart xray nginx sshws noobzvpn-ws stunnel4 dropbear badvpn vpbot')
-        query.edit_message(text="✅ Semua layanan telah di-restart.")
-    elif query.data == 'info_vps':
-        info = run_command("hostname && cat /etc/os-release | grep PRETTY_NAME | cut -d '"' -f 2 && curl -s ipinfo.io/ip && uptime -p")
-        query.edit_message(text=f"💻 <b>Info VPS:</b>\n\n<pre>{info}</pre>", parse_mode='HTML')
-    elif query.data == 'change_banner':
-        banner_content = """<h3 style="text-align:center"><span style="color:white"><span style="color:lime">AWS SERVER</span></span></h3> 
-<h3 style="text-align:center"><span style="color:#ffff00">@Parael1101</span></h3>
-<h3 style="text-align:center"><span style="color:red">SCRIPT BY vinstechmy</span></h3>
-<h3 style="text-align:center"><span style="color:white">Parael</span></h3>
-<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>"""
-        with open('/etc/motd', 'w') as f:
-            f.write(banner_content)
-        
-        query.edit_message_text(text="✅ Banner SSH berhasil diperbarui dengan template default!")
-    elif query.data == 'restart_noobzvpn':
-        query.edit_message(text="🔌 Sedang merestart NoobzVPN...")
-        result = run_command('/usr/local/bin/menu restart_noobzvpn')
-        query.edit_message(text=f"🔌 <b>Restart NoobzVPN:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
-    elif query.data == 'back_to_main':
-        start(update, context)
-
-def main() -> None:
-    updater = Updater(BOT_TOKEN)
-    dispatcher = updater.dispatcher
-    dispatcher.add_handler(CommandHandler("start", start)
-    dispatcher.add_handler(CallbackQueryHandler(button))
-    updater.start_polling()
-    updater.idle()
-
-if __name__ == '__main__':
-    main()
-BOT_EOF
-BOT_EOF
-    chmod +x /etc/vpbot/bot.py
-    cat > /etc/systemd/system/vpbot.service << EOF
-[Unit]
-Description=VPS Telegram Bot
-After=network.target
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/etc/vpbot
-ExecStart=/usr/bin/python3 /etc/vpbot/bot.py
-Restart=always
-RestartSec=3
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable vpbot
-    systemctl start vpbot
-}
-
-# --- EKSEKUSI FUNGSI PEMASANGAN SCRIPT ---
-install_menu_script
-install_bot_script()
-
-# --- Buat file konfigurasi VPS ---
-print_color "YELLOW" "Membuat file konfigurasi VPS..."
-IP_VPS=$(curl -s ipinfo.io/ip)
-cat > /etc/vps.conf << EOF
-DOMAIN="$DOMAIN"
-IP_VPS="$IP_VPS"
-EOF
-
-# Membuat file untuk menyimpan data akun
-print_color "YELLOW" "Membuat database akun..."
-touch /etc/xray/akun.txt
-
-# --- INSTALL BANNER LOGIN DENGAN NEOFETCH ---
-print_color "YELLOW" "Menginstall Banner Login dengan Neofetch..."
-# Tambahkan neofetch ke /etc/profile agar dijalankan saat login
-if ! grep -q "neofetch" /etc/profile; then
-    echo 'neofetch' >> /etc/profile
-fi
-# --- SELESAI ---
-
-# --- BUAT BANNER PRE-LOGIN (/etc/issue.net) ---
-print_color "YELLOW" "Menginstall Banner Pre-Login..."
-cat > /etc/issue.net << 'EOF'
-┌──────────────────────────────────────┐
-│             AWS SERVER               │
-│          @Parael1101                │
-│       SCRIPT BY vinstechmy          │
-│              Parael                 │
-└──────────────────────────────────────┘�
-EOF
-# --- SELESAI ---
-
-# Menyimpan informasi akun
-cat > /root/akun.txt << EOF
-============================================
-         INFORMASI AKUN VPS ANDA
-============================================
-Domain: $DOMAIN
-============================================
-OpenSSH: 22
-Dropbear: 109, 143
-Stunnel4: 222, 777
-SSH Websocket: 80 (/ssh-ws)
-SSH SSL Websocket: 443 (/ssh-ws)
-NoobzVPN: 80 (/noobz)
-Nginx: 81
-BadVPN: 7100-7900
-============================================
-AKUN XRAY (VLESS, VMESS, TROJAN, SS)
-UUID: $UUID
-============================================
-VLESS WS TLS: vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&host=$DOMAIN&path=%2Fvless#VLESS-TLS-$DOMAIN
-VLESS gRPC TLS: vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&host=$DOMAIN&serviceName=vless-grpc&mode=gun#VLESS-gRPC-$DOMAIN
-VMESS WS TLS: vmess://$(echo -n '{"v": "2", "ps": "VMESS-TLS-'$DOMAIN'", "add": "'$DOMAIN'", "port": "443", "id": "'$UUID'", "aid": "0", "scy": "auto", "net": "ws", "type": "none", "host": "'$DOMAIN'", "path": "/vmess", "tls": "tls"}' | base64 -w 0)
-TROJAN WS TLS: trojan://$UUID@$DOMAIN:443?security=tls&type=ws&host=$DOMAIN&path=%2Ftrojan#TROJAN-TLS-$DOMAIN
-SHADOWSOCKS WS TLS: ss://$(echo -n "chacha20-ietf-poly1305:$UUID@$DOMAIN:443" | base64 -w 0)#SS-TLS-$DOMAIN
-============================================
-Ketik 'menu' di terminal untuk membuka menu.
-Kontrol VPS melalui bot Telegram Anda.
-============================================
-EOF
-
-clear
-print_color "GREEN" "============================================"
-print_color "GREEN" "        INSTALASI BERHASIL SELESAI!        "
-print_color "GREEN" "============================================"
-echo
-print_color "YELLOW" "Informasi akun telah disimpan di /root/akun.txt"
-echo
-cat /root/akun.txt
-echo
-print_color "GREEN" "Ketik 'menu' di terminal untuk membuka menu VPS."
-print_color "GREEN" "Kontrol VPS Anda melalui bot Telegram yang sudah Anda buat."
+# Main Run
+install_dependencies
+install_acme
+issue_cert
+install_xray
+config_xray_nginx
+show_menu
