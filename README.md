@@ -14,7 +14,11 @@ Skrip otomatis untuk instalasi dan manajemen VPS (VPN Server) dengan berbagai la
     -   BadVPN (UDPGW)
     -   Nginx
     -   **NoobzVPN** (Port 80 & 443)
--   **Manajemen via Telegram:** Kontrol VPS (cek status, restart, buat akun, ubah banner, dll) melalui bot Telegram.
+-   **Manajemen Akun:**
+    -   Buat akun **Trial** (3 hari) dan **Premium** (30 hari).
+    -   Pilih layanan untuk setiap akun (SSH, Vmess, Vless, dll).
+    -   Hapus, kunci, buka kunci, dan perpanjang akun.
+-   **Manajemen via Telegram:** Kontrol VPS (cek status, restart, buat akun, dll) melalui bot Telegram.
 -   **Keamanan:** Hanya `OWNER_ID` yang bisa mengakses menu bot.
 -   **Stabilitas:** Skrip tidak bergantung pada link download eksternal yang bisa error 404.
 
@@ -31,8 +35,9 @@ Skrip otomatis untuk instalasi dan manajemen VPS (VPN Server) dengan berbagai la
 1.  **Login ke VPS** sebagai user `root`.
 2.  **Jalankan perintah instalasi:**
     ```bash
-    wget -O install.sh https://raw.githubusercontent.com/Senrydepe/NEWAUTOSCRIPTVPS/main/install.sh && chmod +x install.sh && ./install.sh
+    wget -O install.sh https://raw.githubusercontent.com/Senrydepe/NEWAUTOSCRIPTVPS/main/install.sh && sed -i 's/\r$//' install.sh && chmod +x install.sh && ./install.sh
     ```
+    > **Catatan:** Perintah `sed -i 's/\r$//' install.sh` ditambahkan untuk secara otomatis memperbaiki format file yang mungkin bermasalah saat diunduh, mencegah error `bad interpreter`.
 
 3.  **Ikuti instruksi:** Skrip akan meminta Anda untuk memasukkan:
     -   Domain/Subdomain
