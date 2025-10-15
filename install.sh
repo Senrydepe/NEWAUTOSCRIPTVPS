@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# GAGAL: Hentikan script jika ada error
+set -e
+
 # Warna untuk output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -38,7 +41,7 @@ print_color "GREEN" "OS Terdeteksi: $OS $VERSION_ID"
 # Input Domain
 clear
 print_color "YELLOW" "============================================"
-print_color "YELLOW" "   VPS AUTO-SCRIPT (REVERSE PROXY)      "
+print_color "YELLOW" "   VPS AUTO-SCRIPT (REVERSE PROXY) V5     "
 print_color "YELLOW" "============================================"
 echo
 read -p "$(echo -e ${GREEN}Masukkan Domain/Subdomain Anda: ${NC})" DOMAIN
@@ -107,14 +110,22 @@ sed -i 's/DROPBEAR_PORT=22/DROPBEAR_PORT="109 143"/g' /etc/default/dropbear
 sed -i 's/DROPBEAR_EXTRA_ARGS=/DROPBEAR_EXTRA_ARGS="-p 109 -p 143"/g' /etc/default/dropbear
 systemctl restart dropbear
 
-# Install BadVPN
+# FIX 1: Install BadVPN dengan cara yang lebih andal
 print_color "YELLOW" "Menginstall BadVPN..."
+# Install dependensi untuk BadVPN
+apt-get install -y libssl-dev libwrap0-dev libncurses5-dev
 cd /usr/local/src
 wget https://github.com/ambrop72/badvpn/archive/refs/tags/1.999.130.tar.gz
 tar -xvzf 1.999.130.tar.gz
 cd badvpn-1.999.130
 mkdir build && cd build
+# FIX: Gunakan cmake yang sudah diinstall oleh build-essential
 cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1
+# Cek apakah cmake berhasil
+if [ $? -ne 0 ]; then
+    print_color "RED" "Gagal menjalankan cmake. Harap periksa kembali dependensi sistem Anda."
+    exit 1
+fi
 make && make install
 cd /root && rm -rf /usr/local/src/badvpn*
 cat > /etc/systemd/system/badvpn.service << EOF
@@ -130,19 +141,24 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
+systemctl daemon-reload
 systemctl enable badvpn && systemctl start badvpn
+
+# FIX 2: Install Go dengan cara yang lebih andal
+print_color "YELLOW" "Menginstall Go compiler..."
+# Hapus instalasi Go lama jika ada
+rm -rf /usr/local/go
+# Download dan install Go versi terbaru
+GO_VERSION="1.22.4"
+wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+# Set PATH untuk sesi script ini dan sesi berikutnya
+export PATH=$PATH:/usr/local/go/bin
+echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
+source /etc/profile
 
 # Install SSH Websocket (Kode Sumber Ditanam)
 print_color "YELLOW" "Menginstall SSH Websocket dari kode sumber yang ditanam..."
-if ! command -v go &> /dev/null; then
-    print_color "YELLOW" "Menginstall Go compiler..."
-    GO_VERSION="1.21.6"
-    wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
-    rm -rf /usr/local/go && tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
-    export PATH=$PATH:/usr/local/go/bin
-    echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
-    source /etc/profile
-fi
 mkdir -p /tmp/sshws
 cat > /tmp/sshws/main.go << 'EOF'
 package main
@@ -192,6 +208,7 @@ func main() {
 }
 EOF
 cd /tmp/sshws
+# Gunakan Go yang baru diinstall
 /usr/local/go/bin/go build -o sshws
 mkdir -p /usr/local/bin/sshws
 mv sshws /usr/local/bin/sshws/sshws
@@ -211,6 +228,7 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
+systemctl daemon-reload
 systemctl enable sshws && systemctl start sshws
 
 # Install NoobzVPN (Kode Sumber Ditanam)
@@ -265,6 +283,8 @@ func main() {
     if len(os.Args) > 1 {
         if os.Args[1] == "-http-addr" && len(os.Args) > 2 {
             port = os.Args[2][1:]
+        } else if os.Args[1] == "-https-addr" && len(os.Args) > 2 {
+            port = os.Args[2][1:]
         }
     }
     gin.SetMode(gin.ReleaseMode)
@@ -278,6 +298,7 @@ func main() {
 }
 EOF
 cd /tmp/noobzvpn
+# Gunakan Go yang baru diinstall
 /usr/local/go/bin/go mod tidy
 /usr/local/go/bin/go build -o noobzvpn
 mkdir -p /usr/local/bin
@@ -303,7 +324,12 @@ systemctl enable noobzvpn-ws && systemctl start noobzvpn-ws
 
 # --- KONFIGURASI NGINX SEBAGAI REVERSE PROXY ---
 print_color "YELLOW" "Mengkonfigurasi Nginx sebagai Reverse Proxy..."
-systemctl stop nginx
+# FIX 3: Hentikan layanan yang mungkin bentrok port 80 sebelum memulai Nginx
+systemctl stop apache2 nginx 2>/dev/null || true
+systemctl disable apache2 nginx 2>/dev/null || true
+systemctl killall nginx 2>/dev/null || true
+
+systemctl start nginx
 cat > /etc/nginx/sites-available/default << EOF
 server {
     listen 80;
@@ -312,24 +338,24 @@ server {
     location /ssh-ws {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 86400;
     }
 
     location /noobz {
         proxy_pass http://127.0.0.1:8880;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 86400;
     }
 }
@@ -345,7 +371,13 @@ server {
     }
 }
 EOF
-nginx -t && systemctl restart nginx
+# FIX 4: Cek konfigurasi Nginx sebelum me-restart
+nginx -t
+if [ $? -ne 0 ]; then
+    print_color "RED" "Konfigurasi Nginx bermasalah. Periksa kembali file /etc/nginx/sites-available/default."
+    exit 1
+fi
+systemctl restart nginx
 
 # --- INSTALLASI SSL MENGGUNAKAN ACME.SH MODE NGINX ---
 print_color "YELLOW" "Menginstall acme.sh untuk SSL..."
@@ -456,7 +488,7 @@ print_box() {
     local total_width=50
     local pad_len=$(( (total_width - len) / 2 ))
     local padding=$(printf "%*s" "$pad_len" | tr ' ' " ")
-    echo "━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━"
     printf "%s%s\n" "$padding" "$str"
     echo "━━━━━━━━━━━━━━━━━━━━━━━"
 }
@@ -507,7 +539,7 @@ EOF
     local details="
 Username : $username
 Password : $password
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Host : $DOMAIN
 OpenSSH : 22
 Dropbear : 109, 143
@@ -515,14 +547,14 @@ SSH-WS : 80 (/ssh-ws)
 SSH-SSL-WS : 443 (/ssh-ws)
 SSL/TLS : 447, 777
 UDPGW : 7100-7300
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Link SSH Config : http://$DOMAIN:81/ssh-$username.txt
 ━━━━━━━━━━━━━━━━━━━━━━━
 Payload WS
 GET /ssh-ws [protocol][crlf]Host: [host][crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
 ━━━━━━━━━━━━━━━━━━━━━━━
 GET wss://bug.com/ [protocol][crlf]Host: $DOMAIN[crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Expired On : $expired_display
 "
     print_box "SSH ACCOUNT"
@@ -590,7 +622,7 @@ Link TLS : $vless_tls
 Link GRPC : $vless_grpc
 ━━━━━━━━━━━━━━━━━━━━━━━
 Link Vless Config : $config_link
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Expired On : $expired_display
 "
     print_box "VLESS ACCOUNT"
@@ -618,15 +650,15 @@ Key : $uuid
 Network : ws/grpc
 Path : /trojan-ws
 ServiceName : trojan-grpc
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Link WS : $trojan_ws
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Link GO : $trojan_go
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Link GRPC : $trojan_grpc
 ━━━━━━━━━━━━━━━━━━━━━━━
 Link Trojan Config : $config_link
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Expired On : $expired_display
 "
     print_box "TROJAN ACCOUNT"
@@ -659,15 +691,15 @@ Cipers : $ss_method
 Network : ws/grpc
 Path : /ss-ws
 ServiceName : ss-grpc
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Link WS TLS : $ss_ws_tls
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Link GRPC TLS : $ss_grpc_tls
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Link JSON WS : $config_link_ws
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Link JSON gRPC : $config_link_grpc
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Expired On : $expired_display
 "
     print_box "SHADOWSOCKS ACCOUNT"
@@ -689,13 +721,13 @@ EOF
     local details="
 Username : $username
 Password : $password
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Server : $DOMAIN
 Port HTTP : 80 (/noobz)
 Port HTTPS : 443 (/noobz)
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Link Config : http://$DOMAIN:81/noobzvpn-$username.txt
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━
 Expired On : $expired_display
 "
     print_box "NOOBZVPN ACCOUNT"
@@ -962,13 +994,13 @@ def start(update: Update, context: CallbackContext) -> None:
         return
     keyboard = [
         [InlineKeyboardButton("➕ Buat Akun", callback_data='create_account_menu')],
-        [InlineKeyboardButton("🗑️ Hapus Akun", callback_data='delete_account')],
-        [InlineKeyboardButton("📋 Daftar Akun", callback_data='list_accounts')],
-        [InlineKeyboardButton("🔧 Cek Status Layanan", callback_data='status')],
-        [InlineKeyboardButton("🔄 Restart Semua Layanan", callback_data='restart_all')],
-        [InlineKeyboardButton("💻 Info VPS", callback_data='info_vps')],
-        [InlineKeyboardButton("🎨 Ubah Banner SSH", callback_data='change_banner')],
-        [InlineKeyboardButton("🔌 Restart NoobzVPN", callback_data='restart_noobzvpn')],
+        [InlineKeyboardButton("🗑️ Hapus Akun", callback_data='delete_account'],
+        [InlineKeyboardButton("📋 Daftar Akun", callback_data='list_accounts'],
+        [InlineKeyboardButton("🔧 Cek Status Layanan", callback_data='status'],
+        [InlineKeyboardButton("🔄 Restart Semua Layanan", callback_data='restart_all'],
+        [InlineKeyboardButton("💻 Info VPS", callback_data='info_vps'],
+        [InlineKeyboardButton("🎨 Ubah Banner SSH", callback_data='change_banner'],
+        [InlineKeyboardButton("🔌 Restart NoobzVPN", callback_data='restart_noobzvpn'],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text('Halo, Boss! Pilih menu di bawah:', reply_markup=reply_markup)
@@ -979,24 +1011,25 @@ def button(update: Update, context: CallbackContext) -> None:
         query.answer("Maaf, Anda tidak memiliki izin.")
         return
     query.answer()
+
     if query.data == 'create_account_menu':
         keyboard = [
-            [InlineKeyboardButton("🧪 Buat Akun Trial", callback_data='create_trial')],
-            [InlineKeyboardButton("💳 Buat Akun Premium", callback_data='create_premium')],
-            [InlineKeyboardButton("⬅️ Kembali", callback_data='back_to_main')],
+            [InlineKeyboardButton("🧪 Buat Akun Trial", callback_data='create_trial'],
+            [InlineKeyboardButton("💳 Buat Akun Premium", callback_data='create_premium'],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data='back_to_main'],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         query.edit_message_text(text='Pilih jenis akun:', reply_markup=reply_markup)
     elif query.data in ['create_trial', 'create_premium']:
         account_type = "trial" if query.data == 'create_trial' else "premium"
         keyboard = [
-            [InlineKeyboardButton("SSH / Dropbear", callback_data=f'create_{account_type}_ssh')],
-            [InlineKeyboardButton("VMess WS", callback_data=f'create_{account_type}_vmess')],
-            [InlineKeyboardButton("Vless WS", callback_data=f'create_{account_type}_vless')],
-            [InlineKeyboardButton("Trojan WS", callback_data=f'create_{account_type}_trojan')],
-            [InlineKeyboardButton("Shadowsocks WS", callback_data=f'create_{account_type}_ss')],
-            [InlineKeyboardButton("NoobzVPN", callback_data=f'create_{account_type}_noobz')],
-            [InlineKeyboardButton("⬅️ Kembali", callback_data='create_account_menu')],
+            [InlineKeyboardButton("SSH / Dropbear", callback_data=f'create_{account_type}_ssh'],
+            [InlineKeyboardButton("VMess WS", callback_data=f'create_{account_type}_vmess'],
+            [InlineKeyboardButton("Vless WS", callback_data=f'create_{account_type}_vless'],
+            [InlineKeyboardButton("Trojan WS", callback_data=f'create_{account_type}_trojan'],
+            [InlineKeyboardButton("Shadowsocks WS", callback_data=f'create_{account_type}_ss'],
+            [InlineKeyboardButton("NoobzVPN", callback_data=f'create_{account_type}_noobz'],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data='create_account_menu'],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         query.edit_message_text(text=f'Pilih layanan untuk akun {account_type}:', reply_markup=reply_markup)
@@ -1006,18 +1039,22 @@ def button(update: Update, context: CallbackContext) -> None:
         service_map = {'ssh': '1', 'vmess': '2', 'vless': '3', 'trojan': '4', 'ss': '5', 'noobz': '6'}
         service_name = parts[2]
         service_choice = service_map.get(service_name, '0')
+
         with open('/tmp/service_choice', 'w') as f:
             f.write(service_choice)
+        
         command = f'/usr/local/bin/menu create_{account_type}'
         result = run_command(command)
+        
         if os.path.exists('/tmp/service_choice'):
             os.remove('/tmp/service_choice')
-        messages = result.split('━━━━━━━━━━━━━━━━━━━━━━━')
+            
+        messages = result.split('━━━━━━━━━━━━━━━━━━━━━━━━━')
         query.edit_message_text(text=f"✅ Membuat akun {account_type} untuk layanan {service_name}...")
         for msg_part in messages:
             stripped_part = msg_part.strip()
             if stripped_part:
-                formatted_message = f"━━━━━━━━━━━━━━━━━━━━━━━\n{stripped_part}"
+                formatted_message = f"━━━━━━━━━━━━━━━━━━━━━━━━━\n{stripped_part}"
                 try:
                     context.bot.send_message(chat_id=update.effective_chat.id, text=f"```{formatted_message}```", parse_mode='MarkdownV2')
                 except Exception:
@@ -1029,41 +1066,42 @@ def button(update: Update, context: CallbackContext) -> None:
         query.edit_message_text(text=f"📋 <b>Daftar Akun:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
     elif query.data == 'status':
         result = run_command('/usr/local/bin/menu status')
-        query.edit_message_text(text=f"🔧 <b>Status Layanan:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
+        query.edit_message(text=f"🔧 <b>Status Layanan:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
     elif query.data == 'restart_all':
-        query.edit_message_text(text="🔄 Sedang merestart semua layanan...")
+        query.edit_message(text="🔄 Sedang merestart semua layanan...")
         run_command('systemctl restart xray nginx sshws noobzvpn-ws stunnel4 dropbear badvpn vpbot')
-        query.edit_message_text(text="✅ Semua layanan telah di-restart.")
+        query.edit_message(text="✅ Semua layanan telah di-restart.")
     elif query.data == 'info_vps':
-        info = run_command("hostname && cat /etc/os-release | grep PRETTY_NAME | cut -d '\"' -f 2 && curl -s ipinfo.io/ip && uptime -p")
-        query.edit_message_text(text=f"💻 <b>Info VPS:</b>\n\n<pre>{info}</pre>", parse_mode='HTML')
+        info = run_command("hostname && cat /etc/os-release | grep PRETTY_NAME | cut -d '"' -f 2 && curl -s ipinfo.io/ip && uptime -p")
+        query.edit_message(text=f"💻 <b>Info VPS:</b>\n\n<pre>{info}</pre>", parse_mode='HTML')
     elif query.data == 'change_banner':
-        banner_content = """<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
-<h3 style="text-align:center"><span style="color:white"><span style="color:lime">AWS SERVER</span></span></h3> 
+        banner_content = """<h3 style="text-align:center"><span style="color:white"><span style="color:lime">AWS SERVER</span></span></h3> 
 <h3 style="text-align:center"><span style="color:#ffff00">@Parael1101</span></h3>
 <h3 style="text-align:center"><span style="color:red">SCRIPT BY vinstechmy</span></h3>
 <h3 style="text-align:center"><span style="color:white">Parael</span></h3>
 <h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>"""
         with open('/etc/motd', 'w') as f:
             f.write(banner_content)
+        
         query.edit_message_text(text="✅ Banner SSH berhasil diperbarui dengan template default!")
     elif query.data == 'restart_noobzvpn':
-        query.edit_message_text(text="🔌 Sedang merestart NoobzVPN...")
+        query.edit_message(text="🔌 Sedang merestart NoobzVPN...")
         result = run_command('/usr/local/bin/menu restart_noobzvpn')
-        query.edit_message_text(text=f"🔌 <b>Restart NoobzVPN:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
+        query.edit_message(text=f"🔌 <b>Restart NoobzVPN:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
     elif query.data == 'back_to_main':
         start(update, context)
 
 def main() -> None:
     updater = Updater(BOT_TOKEN)
     dispatcher = updater.dispatcher
-    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(CommandHandler("start", start)
     dispatcher.add_handler(CallbackQueryHandler(button))
     updater.start_polling()
     updater.idle()
 
 if __name__ == '__main__':
     main()
+BOT_EOF
 BOT_EOF
     chmod +x /etc/vpbot/bot.py
     cat > /etc/systemd/system/vpbot.service << EOF
@@ -1087,7 +1125,7 @@ EOF
 
 # --- EKSEKUSI FUNGSI PEMASANGAN SCRIPT ---
 install_menu_script
-install_bot_script
+install_bot_script()
 
 # --- Buat file konfigurasi VPS ---
 print_color "YELLOW" "Membuat file konfigurasi VPS..."
@@ -1109,15 +1147,15 @@ if ! grep -q "neofetch" /etc/profile; then
 fi
 # --- SELESAI ---
 
-# --- DITAMBAHKAN: BUAT BANNER PRE-LOGIN (/etc/issue.net) ---
+# --- BUAT BANNER PRE-LOGIN (/etc/issue.net) ---
 print_color "YELLOW" "Menginstall Banner Pre-Login..."
 cat > /etc/issue.net << 'EOF'
 ┌──────────────────────────────────────┐
-│             INDONESIA               │
+│             AWS SERVER               │
 │          @Parael1101                │
-│       SCRIPT BY Parael1101          │
+│       SCRIPT BY vinstechmy          │
 │              Parael                 │
-└──────────────────────────────────────┘
+└──────────────────────────────────────┘�
 EOF
 # --- SELESAI ---
 
