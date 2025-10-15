@@ -62,6 +62,7 @@ apt-get update -y && apt-get upgrade -y
 
 # Install Dependencies
 print_color "YELLOW" "Menginstall dependensi..."
+# --- DITAMBAHKAN: jq untuk manipulasi JSON ---
 apt-get install -y curl wget git unzip gnupg2 lsb-release nginx certbot python3-certbot-nginx socat netcat-openbsd cron jq build-essential
 
 # Set Domain di /etc/hosts
@@ -429,7 +430,7 @@ cat > /etc/xray/config.json << EOF
     "inbounds": [
         {
             "listen": "0.0.0.0", "port": 443, "protocol": "vless",
-            "settings": { "clients": [{ "id": "$UUID", "flow": "xtls-rprx-vision" }], "decryption": "none" },
+            "settings": { "clients": [], "decryption": "none" },
             "streamSettings": {
                 "network": "ws", "security": "tls",
                 "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
@@ -438,7 +439,7 @@ cat > /etc/xray/config.json << EOF
         },
         {
             "listen": "0.0.0.0", "port": 443, "protocol": "vmess",
-            "settings": { "clients": [{ "id": "$UUID" }] },
+            "settings": { "clients": [] },
             "streamSettings": {
                 "network": "ws", "security": "tls",
                 "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
@@ -447,7 +448,7 @@ cat > /etc/xray/config.json << EOF
         },
         {
             "listen": "0.0.0.0", "port": 443, "protocol": "trojan",
-            "settings": { "clients": [{ "password": "$UUID" }] },
+            "settings": { "clients": [] },
             "streamSettings": {
                 "network": "ws", "security": "tls",
                 "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
@@ -456,7 +457,7 @@ cat > /etc/xray/config.json << EOF
         },
         {
             "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks",
-            "settings": { "clients": [{ "method": "chacha20-ietf-poly1305", "password": "$UUID" }] },
+            "settings": { "clients": [] },
             "streamSettings": {
                 "network": "ws", "security": "tls",
                 "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
@@ -465,27 +466,27 @@ cat > /etc/xray/config.json << EOF
         },
         {
             "listen": "0.0.0.0", "port": 80, "protocol": "vless",
-            "settings": { "clients": [{ "id": "$UUID" }], "decryption": "none" },
+            "settings": { "clients": [], "decryption": "none" },
             "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vless" } }, "tag": "Vless-WS-NoneTLS"
         },
         {
             "listen": "0.0.0.0", "port": 80, "protocol": "vmess",
-            "settings": { "clients": [{ "id": "$UUID" }] },
+            "settings": { "clients": [] },
             "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vmess" } }, "tag": "Vmess-WS-NoneTLS"
         },
         {
             "listen": "0.0.0.0", "port": 80, "protocol": "trojan",
-            "settings": { "clients": [{ "password": "$UUID" }] },
+            "settings": { "clients": [] },
             "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/trojan" } }, "tag": "Trojan-WS-NoneTLS"
         },
         {
             "listen": "0.0.0.0", "port": 80, "protocol": "shadowsocks",
-            "settings": { "clients": [{ "method": "chacha20-ietf-poly1305", "password": "$UUID" }] },
+            "settings": { "clients": [] },
             "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/ss" } }, "tag": "SS-WS-NoneTLS"
         },
         {
             "listen": "0.0.0.0", "port": 443, "protocol": "vless",
-            "settings": { "clients": [{ "id": "$UUID" }], "decryption": "none" },
+            "settings": { "clients": [], "decryption": "none" },
             "streamSettings": {
                 "network": "grpc", "security": "tls",
                 "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
@@ -494,7 +495,7 @@ cat > /etc/xray/config.json << EOF
         },
         {
             "listen": "0.0.0.0", "port": 443, "protocol": "vmess",
-            "settings": { "clients": [{ "id": "$UUID" }] },
+            "settings": { "clients": [] },
             "streamSettings": {
                 "network": "grpc", "security": "tls",
                 "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
@@ -503,7 +504,7 @@ cat > /etc/xray/config.json << EOF
         },
         {
             "listen": "0.0.0.0", "port": 443, "protocol": "trojan",
-            "settings": { "clients": [{ "password": "$UUID" }] },
+            "settings": { "clients": [] },
             "streamSettings": {
                 "network": "grpc", "security": "tls",
                 "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
@@ -512,7 +513,7 @@ cat > /etc/xray/config.json << EOF
         },
         {
             "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks",
-            "settings": { "clients": [{ "method": "chacha20-ietf-poly1305", "password": "$UUID" }] },
+            "settings": { "clients": [] },
             "streamSettings": {
                 "network": "grpc", "security": "tls",
                 "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
@@ -581,6 +582,12 @@ EOF
 systemctl daemon-reload
 systemctl enable vpbot
 systemctl start vpbot
+
+# --- DITAMBAHKAN: BUAT FILE DATABASE AKUN ---
+# Membuat file untuk menyimpan data akun
+print_color "YELLOW" "Membuat database akun..."
+touch /etc/xray/akun.txt
+# --- SELESAI ---
 
 # --- DITAMBAHKAN: PASANG BANNER AWAL ---
 # Membuat Banner SSH
