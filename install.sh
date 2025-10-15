@@ -66,7 +66,7 @@ apt-get update -y && apt-get upgrade -y
 
 # Install Dependencies
 print_color "YELLOW" "Menginstall dependensi..."
-apt-get install -y curl wget git unzip gnupg2 lsb-release nginx socat netcat-openbsd cron jq build-essential
+apt-get install -y curl wget git unzip gnupg2 lsb-release nginx socat netcat-openbsd cron jq build-essential neofetch
 
 # Set Domain di /etc/hosts
 sed -i "/127.0.0.1 localhost/c\127.0.0.1 localhost $DOMAIN" /etc/hosts
@@ -168,7 +168,7 @@ func handleConnection(clientConn net.Conn, sshAddr string) {
 }
 func main() {
     sshAddr := "127.0.0.1:22"
-    listenPort := "8080" # DIUBAH: Port internal
+    listenPort := "8080"
     if addr := os.Getenv("SSH_ADDR"); addr != "" {
         sshAddr = addr
     }
@@ -205,7 +205,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/sshws/sshws -p 8080 # DIUBAH: Port internal
+ExecStart=/usr/local/bin/sshws/sshws -p 8080
 Restart=always
 RestartSec=3
 [Install]
@@ -261,7 +261,7 @@ func handleWebSocket(c *gin.Context) {
     }
 }
 func main() {
-    port := "8880" # DIUBAH: Port internal
+    port := "8880"
     if len(os.Args) > 1 {
         if os.Args[1] == "-http-addr" && len(os.Args) > 2 {
             port = os.Args[2][1:]
@@ -292,7 +292,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/noobzvpn -http-addr :8880 # DIUBAH: Port internal dan nama service
+ExecStart=/usr/local/bin/noobzvpn -http-addr :8880
 Restart=always
 RestartSec=3
 [Install]
@@ -301,7 +301,7 @@ EOF
 systemctl daemon-reload
 systemctl enable noobzvpn-ws && systemctl start noobzvpn-ws
 
-# --- DIUBAH: KONFIGURASI NGINX SEBAGAI REVERSE PROXY ---
+# --- KONFIGURASI NGINX SEBAGAI REVERSE PROXY ---
 print_color "YELLOW" "Mengkonfigurasi Nginx sebagai Reverse Proxy..."
 systemctl stop nginx
 cat > /etc/nginx/sites-available/default << EOF
@@ -309,7 +309,6 @@ server {
     listen 80;
     server_name $DOMAIN;
 
-    # Route for SSH Websocket
     location /ssh-ws {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
@@ -322,7 +321,6 @@ server {
         proxy_read_timeout 86400;
     }
 
-    # Route for NoobzVPN
     location /noobz {
         proxy_pass http://127.0.0.1:8880;
         proxy_http_version 1.1;
@@ -348,19 +346,13 @@ server {
 }
 EOF
 nginx -t && systemctl restart nginx
-# --- SELESAI KONFIGURASI NGINX ---
 
-# --- DIUBAH: INSTALLASI SSL MENGGUNAKAN ACME.SH MODE NGINX ---
-# Install acme.sh
+# --- INSTALLASI SSL MENGGUNAKAN ACME.SH MODE NGINX ---
 print_color "YELLOW" "Menginstall acme.sh untuk SSL..."
 curl https://get.acme.sh | sh -s email=admin@$DOMAIN
 source ~/.bashrc
-
-# Dapatkan sertifikat SSL dengan acme.sh dalam mode nginx
 print_color "YELLOW" "Mendapatkan sertifikat SSL untuk $DOMAIN..."
 ~/.acme.sh/acme.sh --issue -d $DOMAIN --nginx -k ec-256
-
-# Install sertifikat ke folder Xray
 print_color "YELLOW" "Menginstall sertifikat SSL..."
 ~/.acme.sh/acme.sh --install-cert -d $DOMAIN --ecc \
     --fullchain-file /etc/xray/xray.crt \
@@ -406,7 +398,6 @@ ufw allow 143/tcp
 ufw allow 222/tcp
 ufw allow 777/tcp
 ufw allow 7100:7900/udp
-# DIUBAH: Port internal tidak dibuka ke publik
 ufw --force enable
 
 # --- FUNGSI UNTUK MENANAMKAN SCRIPT ---
@@ -506,7 +497,6 @@ create_ssh_account_details() {
 Host = $DOMAIN
 Port SSH = 22, 444
 Port Dropbear = 109, 143, 443
-# DIUBAH: Gunakan path reverse proxy
 SSH WS = http://$DOMAIN/ssh-ws
 SSH SSL WS : https://$DOMAIN/ssh-ws
 Username = $username
@@ -521,7 +511,6 @@ Password : $password
 Host : $DOMAIN
 OpenSSH : 22
 Dropbear : 109, 143
-# DIUBAH: Tampilkan port 80 dan path
 SSH-WS : 80 (/ssh-ws)
 SSH-SSL-WS : 443 (/ssh-ws)
 SSL/TLS : 447, 777
@@ -692,7 +681,6 @@ create_noobzvpn_account_details() {
     cat > "/var/www/html/noobzvpn-$username.txt" <<EOF
 [NoobzVPN]
 server = $DOMAIN
-# DIUBAH: Gunakan path reverse proxy
 port_http = 80 (/noobz)
 port_https = 443 (/noobz)
 username = $username
@@ -703,7 +691,6 @@ Username : $username
 Password : $password
 ━━━━━━━━━━━━━━━━━━━━━━━
 Server : $DOMAIN
-# DIUBAH: Tampilkan port 80 dan path
 Port HTTP : 80 (/noobz)
 Port HTTPS : 443 (/noobz)
 ━━━━━━━━━━━━━━━━━━━━━━━
@@ -880,22 +867,18 @@ info_vps() {
 }
 
 change_banner() {
-    echo "Banner saat ini:"
-    cat /etc/motd
+    echo "Banner login saat ini menggunakan Neofetch."
+    echo "Untuk mengkustomisasi tampilan Neofetch, Anda bisa:"
+    echo "1. Buat file konfigurasi: mkdir -p ~/.config/neofetch && nano ~/.config/neofetch/config.conf"
+    echo "2. Kunjungi situs https://github.com/dylanaraps/neofetch/wiki/Customization untuk panduan konfigurasi."
     echo
-    read -p "Apakah Anda ingin mengganti dengan template default? (y/n): " confirm
+    read -p "Apakah Anda ingin mereset konfigurasi Neofetch ke default? (y/n): " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        cat > /etc/motd << EOF
-<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
-<h3 style="text-align:center"><span style="color:white"><span style="color:lime">AWS SERVER</span></span></h3> 
-<h3 style="text-align:center"><span style="color:#ffff00">@Parael1101</span></h3>
-<h3 style="text-align:center"><span style="color:red">SCRIPT BY vinstechmy</span></h3>
-<h3 style="text-align:center"><span style="color:white">Parael</span></h3>
-<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
-EOF
-        echo "Banner berhasil diperbarui!"
+        rm -f ~/.config/neofetch/config.conf
+        echo "Konfigurasi Neofetch telah direset ke default."
+        echo "Logout dan login kembali untuk melihat perubahannya."
     else
-        echo "Batal mengubah banner."
+        echo "Batal mengubah konfigurasi."
     fi
 }
 
@@ -1028,7 +1011,7 @@ def button(update: Update, context: CallbackContext) -> None:
         command = f'/usr/local/bin/menu create_{account_type}'
         result = run_command(command)
         if os.path.exists('/tmp/service_choice'):
-            os.remove('/tmp/service_choice)
+            os.remove('/tmp/service_choice')
         messages = result.split('━━━━━━━━━━━━━━━━━━━━━━━')
         query.edit_message_text(text=f"✅ Membuat akun {account_type} untuk layanan {service_name}...")
         for msg_part in messages:
@@ -1118,16 +1101,25 @@ EOF
 print_color "YELLOW" "Membuat database akun..."
 touch /etc/xray/akun.txt
 
-# Membuat Banner SSH
-print_color "YELLOW" "Menginstall Banner SSH..."
-cat > /etc/motd << EOF
-<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
-<h3 style="text-align:center"><span style="color:white"><span style="color:lime">AWS SERVER</span></span></h3> 
-<h3 style="text-align:center"><span style="color:#ffff00">@Parael1101</span></h3>
-<h3 style="text-align:center"><span style="color:red">SCRIPT BY vinstechmy</span></h3>
-<h3 style="text-align:center"><span style="color:white">Parael</span></h3>
-<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
+# --- INSTALL BANNER LOGIN DENGAN NEOFETCH ---
+print_color "YELLOW" "Menginstall Banner Login dengan Neofetch..."
+# Tambahkan neofetch ke /etc/profile agar dijalankan saat login
+if ! grep -q "neofetch" /etc/profile; then
+    echo 'neofetch' >> /etc/profile
+fi
+# --- SELESAI ---
+
+# --- DITAMBAHKAN: BUAT BANNER PRE-LOGIN (/etc/issue.net) ---
+print_color "YELLOW" "Menginstall Banner Pre-Login..."
+cat > /etc/issue.net << 'EOF'
+┌──────────────────────────────────────┐
+│             INDONESIA               │
+│          @Parael1101                │
+│       SCRIPT BY Parael1101          │
+│              Parael                 │
+└──────────────────────────────────────┘
 EOF
+# --- SELESAI ---
 
 # Menyimpan informasi akun
 cat > /root/akun.txt << EOF
@@ -1139,7 +1131,6 @@ Domain: $DOMAIN
 OpenSSH: 22
 Dropbear: 109, 143
 Stunnel4: 222, 777
-# DIUBAH: Informasi akses baru
 SSH Websocket: 80 (/ssh-ws)
 SSH SSL Websocket: 443 (/ssh-ws)
 NoobzVPN: 80 (/noobz)
