@@ -18,7 +18,6 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # --- DETEKSI OS YANG LEBIH BAIK DAN UNIVERSAL ---
-# Gunakan /etc/os-release, standar untuk distro modern
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     OS=$ID
@@ -39,7 +38,7 @@ print_color "GREEN" "OS Terdeteksi: $OS $VERSION_ID"
 # Input Domain
 clear
 print_color "YELLOW" "============================================"
-print_color "YELLOW" "      VPS AUTO-SCRIPT INSTALLER V3         "
+print_color "YELLOW" "   VPS AUTO-SCRIPT (REVERSE PROXY)      "
 print_color "YELLOW" "============================================"
 echo
 read -p "$(echo -e ${GREEN}Masukkan Domain/Subdomain Anda: ${NC})" DOMAIN
@@ -67,7 +66,6 @@ apt-get update -y && apt-get upgrade -y
 
 # Install Dependencies
 print_color "YELLOW" "Menginstall dependensi..."
-# --- DIUBAH: HILANGKAN CERTBOT ---
 apt-get install -y curl wget git unzip gnupg2 lsb-release nginx socat netcat-openbsd cron jq build-essential
 
 # Set Domain di /etc/hosts
@@ -170,7 +168,7 @@ func handleConnection(clientConn net.Conn, sshAddr string) {
 }
 func main() {
     sshAddr := "127.0.0.1:22"
-    listenPort := "80"
+    listenPort := "8080" # DIUBAH: Port internal
     if addr := os.Getenv("SSH_ADDR"); addr != "" {
         sshAddr = addr
     }
@@ -207,30 +205,13 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/sshws/sshws -p 80
+ExecStart=/usr/local/bin/sshws/sshws -p 8080 # DIUBAH: Port internal
 Restart=always
 RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
 systemctl enable sshws && systemctl start sshws
-
-# Install SSH SSL Websocket
-print_color "YELLOW" "Menginstall SSH SSL Websocket..."
-cat > /etc/systemd/system/sshws-ssl.service << EOF
-[Unit]
-Description=SSH SSL Websocket Service
-After=network.target
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/sshws/sshws -p 443
-Restart=always
-RestartSec=3
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl enable sshws-ssl && systemctl start sshws-ssl
 
 # Install NoobzVPN (Kode Sumber Ditanam)
 print_color "YELLOW" "Menginstall NoobzVPN dari kode sumber yang ditanam..."
@@ -280,11 +261,9 @@ func handleWebSocket(c *gin.Context) {
     }
 }
 func main() {
-    port := "8080"
+    port := "8880" # DIUBAH: Port internal
     if len(os.Args) > 1 {
         if os.Args[1] == "-http-addr" && len(os.Args) > 2 {
-            port = os.Args[2][1:]
-        } else if os.Args[1] == "-https-addr" && len(os.Args) > 2 {
             port = os.Args[2][1:]
         }
     }
@@ -306,40 +285,57 @@ mv noobzvpn /usr/local/bin/noobzvpn
 chmod +x /usr/local/bin/noobzvpn
 cd /root
 rm -rf /tmp/noobzvpn
-cat > /etc/systemd/system/noobzvpn-80.service << EOF
+cat > /etc/systemd/system/noobzvpn-ws.service << EOF
 [Unit]
-Description=NoobzVPN Port 80 Service
+Description=NoobzVPN Reverse Proxy Service
 After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/noobzvpn -http-addr :80
-Restart=always
-RestartSec=3
-[Install]
-WantedBy=multi-user.target
-EOF
-cat > /etc/systemd/system/noobzvpn-443.service << EOF
-[Unit]
-Description=NoobzVPN Port 443 Service
-After=network.target
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/noobzvpn -https-addr :443
+ExecStart=/usr/local/bin/noobzvpn -http-addr :8880 # DIUBAH: Port internal dan nama service
 Restart=always
 RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable noobzvpn-80 noobzvpn-443
-systemctl start noobzvpn-80 noobzvpn-443
+systemctl enable noobzvpn-ws && systemctl start noobzvpn-ws
 
-# Install & Configure Nginx
-print_color "YELLOW" "Menginstall dan konfigurasi Nginx..."
+# --- DIUBAH: KONFIGURASI NGINX SEBAGAI REVERSE PROXY ---
+print_color "YELLOW" "Mengkonfigurasi Nginx sebagai Reverse Proxy..."
 systemctl stop nginx
 cat > /etc/nginx/sites-available/default << EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    # Route for SSH Websocket
+    location /ssh-ws {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+    }
+
+    # Route for NoobzVPN
+    location /noobz {
+        proxy_pass http://127.0.0.1:8880;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+    }
+}
+
 server {
     listen 81;
     listen [::]:81;
@@ -352,33 +348,24 @@ server {
 }
 EOF
 nginx -t && systemctl restart nginx
+# --- SELESAI KONFIGURASI NGINX ---
 
-# --- DIUBAH: INSTALLASI SSL MENGGUNAKAN ACME.SH ---
+# --- DIUBAH: INSTALLASI SSL MENGGUNAKAN ACME.SH MODE NGINX ---
 # Install acme.sh
 print_color "YELLOW" "Menginstall acme.sh untuk SSL..."
 curl https://get.acme.sh | sh -s email=admin@$DOMAIN
-
-# Source .bashrc untuk membuat perintah 'acme.sh' tersedia
 source ~/.bashrc
 
-# Hentikan layanan yang menggunakan port 80 sementara
-print_color "YELLOW" "Menghentikan layanan port 80 untuk verifikasi SSL..."
-systemctl stop nginx sshws noobzvpn-80
-
-# Dapatkan sertifikat SSL dengan acme.sh dalam mode standalone
+# Dapatkan sertifikat SSL dengan acme.sh dalam mode nginx
 print_color "YELLOW" "Mendapatkan sertifikat SSL untuk $DOMAIN..."
-~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone -k ec-256
+~/.acme.sh/acme.sh --issue -d $DOMAIN --nginx -k ec-256
 
-# Install sertifikat ke folder yang lebih mudah diakses
+# Install sertifikat ke folder Xray
 print_color "YELLOW" "Menginstall sertifikat SSL..."
 ~/.acme.sh/acme.sh --install-cert -d $DOMAIN --ecc \
     --fullchain-file /etc/xray/xray.crt \
     --key-file /etc/xray/xray.key \
     --reloadcmd "systemctl restart xray"
-
-# Jalankan kembali layanan yang dihentikan
-print_color "YELLOW" "Menjalankan kembali layanan port 80..."
-systemctl start nginx sshws noobzvpn-80
 # --- SELESAI MODIFIKASI SSL ---
 
 # Membuat Konfigurasi Xray
@@ -393,10 +380,6 @@ cat > /etc/xray/config.json << EOF
         { "listen": "0.0.0.0", "port": 443, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "wsSettings": { "path": "/vmess" } }, "tag": "Vmess-WSS-TLS" },
         { "listen": "0.0.0.0", "port": 443, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "wsSettings": { "path": "/trojan" } }, "tag": "Trojan-WSS-TLS" },
         { "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "wsSettings": { "path": "/ss" } }, "tag": "SS-WSS-TLS" },
-        { "listen": "0.0.0.0", "port": 80, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vless" } }, "tag": "Vless-WS-NoneTLS" },
-        { "listen": "0.0.0.0", "port": 80, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vmess" } }, "tag": "Vmess-WS-NoneTLS" },
-        { "listen": "0.0.0.0", "port": 80, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/trojan" } }, "tag": "Trojan-WS-NoneTLS" },
-        { "listen": "0.0.0.0", "port": 80, "protocol": "shadowsocks", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/ss" } }, "tag": "SS-WS-NoneTLS" },
         { "listen": "0.0.0.0", "port": 443, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "grpcSettings": { "serviceName": "vless-grpc" } }, "tag": "Vless-gRPC-TLS" },
         { "listen": "0.0.0.0", "port": 443, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "grpcSettings": { "serviceName": "vmess-grpc" } }, "tag": "Vmess-gRPC-TLS" },
         { "listen": "0.0.0.0", "port": 443, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "security": "tls", "tlsSettings": { "certificates": [{ "certificateFile": "/etc/xray/xray.crt", "keyFile": "/etc/xray/xray.key" }] }, "grpcSettings": { "serviceName": "trojan-grpc" } }, "tag": "Trojan-gRPC-TLS" },
@@ -423,6 +406,7 @@ ufw allow 143/tcp
 ufw allow 222/tcp
 ufw allow 777/tcp
 ufw allow 7100:7900/udp
+# DIUBAH: Port internal tidak dibuka ke publik
 ufw --force enable
 
 # --- FUNGSI UNTUK MENANAMKAN SCRIPT ---
@@ -522,11 +506,12 @@ create_ssh_account_details() {
 Host = $DOMAIN
 Port SSH = 22, 444
 Port Dropbear = 109, 143, 443
-Port SSH WS = 80
-Port SSH SSL WS = 443
+# DIUBAH: Gunakan path reverse proxy
+SSH WS = http://$DOMAIN/ssh-ws
+SSH SSL WS : https://$DOMAIN/ssh-ws
 Username = $username
 Password = $password
-Payload WS = GET / [protocol][crlf]Host: [host][crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
+Payload WS = GET /ssh-ws [protocol][crlf]Host: [host][crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
 Payload SSL WS = GET wss://bug.com/ [protocol][crlf]Host: $DOMAIN[crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
 EOF
     local details="
@@ -536,15 +521,16 @@ Password : $password
 Host : $DOMAIN
 OpenSSH : 22
 Dropbear : 109, 143
-SSH-WS : 80
-SSH-SSL-WS : 443
+# DIUBAH: Tampilkan port 80 dan path
+SSH-WS : 80 (/ssh-ws)
+SSH-SSL-WS : 443 (/ssh-ws)
 SSL/TLS : 447, 777
 UDPGW : 7100-7300
 ━━━━━━━━━━━━━━━━━━━━━━━
 Link SSH Config : http://$DOMAIN:81/ssh-$username.txt
 ━━━━━━━━━━━━━━━━━━━━━━━
 Payload WS
-GET / [protocol][crlf]Host: [host][crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
+GET /ssh-ws [protocol][crlf]Host: [host][crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
 ━━━━━━━━━━━━━━━━━━━━━━━
 GET wss://bug.com/ [protocol][crlf]Host: $DOMAIN[crlf]Connection: Keep-Alive[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
 ━━━━━━━━━━━━━━━━━━━━━━━
@@ -560,18 +546,15 @@ create_vmess_account_details() {
     local expired_display="$3"
     local config_link="http://$DOMAIN:81/vmess-$remarks.txt"
     local vmess_tls=$(create_vmess_link "VMESS_TLS_$remarks" "$uuid" "$DOMAIN" "443" "/vmess" "ws" "tls" "$DOMAIN" "$DOMAIN")
-    local vmess_ntls=$(create_vmess_link "VMESS_NTLS_$remarks" "$uuid" "$DOMAIN" "80" "/vmess" "ws" "none" "$DOMAIN" "$DOMAIN")
     local vmess_grpc=$(create_vmess_link "VMESS_GRPC_$remarks" "$uuid" "$DOMAIN" "443" "vmess-grpc" "grpc" "tls" "$DOMAIN" "$DOMAIN")
     cat > "/var/www/html/vmess-$remarks.txt" <<EOF
  $vmess_tls
- $vmess_ntls
  $vmess_grpc
 EOF
     local details="
 Remarks : $remarks
 Domain : $DOMAIN
 Port TLS : 443
-Port none TLS : 80
 Port GRPC : 443
 id : $uuid
 alterId : 0
@@ -581,8 +564,6 @@ Path : /vmess
 ServiceName : vmess-grpc
 ━━━━━━━━━━━━━━━━━━━━━━━
 Link TLS : $vmess_tls
-━━━━━━━━━━━━━━━━━━━━━━━
-Link none TLS : $vmess_ntls
 ━━━━━━━━━━━━━━━━━━━━━━━
 Link GRPC : $vmess_grpc
 ━━━━━━━━━━━━━━━━━━━━━━━
@@ -600,18 +581,15 @@ create_vless_account_details() {
     local expired_display="$3"
     local config_link="http://$DOMAIN:81/vless-$remarks.txt"
     local vless_tls=$(create_url_scheme_link "vless" "$uuid" "$DOMAIN:443" "?type=ws&encryption=none&security=tls&host=$DOMAIN&path=/vless&allowInsecure=1&sni=$DOMAIN" "XRAY_VLESS_TLS_$remarks")
-    local vless_ntls=$(create_url_scheme_link "vless" "$uuid" "$DOMAIN:80" "?type=ws&encryption=none&security=none&host=$DOMAIN&path=/vless" "XRAY_VLESS_NTLS_$remarks")
     local vless_grpc=$(create_url_scheme_link "vless" "$uuid" "$DOMAIN:443" "?mode=gun&security=tls&encryption=none&type=grpc&serviceName=vless-grpc&sni=$DOMAIN" "VLESS_GRPC_$remarks")
     cat > "/var/www/html/vless-$remarks.txt" <<EOF
  $vless_tls
- $vless_ntls
  $vless_grpc
 EOF
     local details="
 Remarks : $remarks
 Domain : $DOMAIN
 port TLS : 443
-port none TLS : 80
 id : $uuid
 Network : ws/grpc
 Encryption : none
@@ -619,8 +597,6 @@ Path : /vless
 Path : vless-grpc
 ━━━━━━━━━━━━━━━━━━━━━━━
 Link TLS : $vless_tls
-━━━━━━━━━━━━━━━━━━━━━━━
-Link none TLS : $vless_ntls
 ━━━━━━━━━━━━━━━━━━━━━━━
 Link GRPC : $vless_grpc
 ━━━━━━━━━━━━━━━━━━━━━━━
@@ -677,21 +653,17 @@ create_shadowsocks_account_details() {
     local config_link_ws="http://$DOMAIN:81/sodosokws-$remarks.txt"
     local config_link_grpc="http://$DOMAIN:81/sodosokgrpc-$remarks.txt"
     local ss_ws_tls=$(create_url_scheme_link "ss" "$ss_payload_base64" "$DOMAIN:443" "?path=/ss-ws&security=tls&encryption=none&type=ws" "$remarks")
-    local ss_ws_ntls=$(create_url_scheme_link "ss" "$ss_payload_base64" "$DOMAIN:80" "?path=/ss-ws&security=none&encryption=none&type=ws" "$remarks")
     local ss_grpc_tls=$(create_url_scheme_link "ss" "$ss_payload_base64" "$DOMAIN:443" "?mode=gun&security=tls&encryption=none&type=grpc&serviceName=ss-grpc&sni=bug.com" "$remarks")
-    local ss_grpc_ntls=$(create_url_scheme_link "ss" "$ss_payload_base64" "$DOMAIN:80" "?mode=gun&security=none&encryption=none&type=grpc&serviceName=ss-grpc&sni=bug.com" "$remarks")
     cat > "/var/www/html/sodosokws-$remarks.txt" <<EOF
  $ss_ws_tls
- $ss_ws_ntls
 EOF
     cat > "/var/www/html/sodosokgrpc-$remarks.txt" <<EOF
  $ss_grpc_tls
- $ss_grpc_ntls
 EOF
     local details="
 Remarks : $remarks
 Domain : $DOMAIN
-Port WS : 443/80
+Port WS : 443
 Port GRPC : 443
 Password : $uuid
 Cipers : $ss_method
@@ -701,11 +673,7 @@ ServiceName : ss-grpc
 ━━━━━━━━━━━━━━━━━━━━━━━
 Link WS TLS : $ss_ws_tls
 ━━━━━━━━━━━━━━━━━━━━━━━
-Link WS None TLS : $ss_ws_ntls
-━━━━━━━━━━━━━━━━━━━━━━━
 Link GRPC TLS : $ss_grpc_tls
-━━━━━━━━━━━━━━━━━━━━━━━
-Link GRPC None TLS : $ss_grpc_ntls
 ━━━━━━━━━━━━━━━━━━━━━━━
 Link JSON WS : $config_link_ws
 ━━━━━━━━━━━━━━━━━━━━━━━
@@ -724,8 +692,9 @@ create_noobzvpn_account_details() {
     cat > "/var/www/html/noobzvpn-$username.txt" <<EOF
 [NoobzVPN]
 server = $DOMAIN
-port_http = 80
-port_https = 443
+# DIUBAH: Gunakan path reverse proxy
+port_http = 80 (/noobz)
+port_https = 443 (/noobz)
 username = $username
 password = $password
 EOF
@@ -734,8 +703,9 @@ Username : $username
 Password : $password
 ━━━━━━━━━━━━━━━━━━━━━━━
 Server : $DOMAIN
-Port HTTP : 80
-Port HTTPS : 443
+# DIUBAH: Tampilkan port 80 dan path
+Port HTTP : 80 (/noobz)
+Port HTTPS : 443 (/noobz)
 ━━━━━━━━━━━━━━━━━━━━━━━
 Link Config : http://$DOMAIN:81/noobzvpn-$username.txt
 ━━━━━━━━━━━━━━━━━━━━━━━
@@ -886,20 +856,18 @@ renew_account() {
 check_status() {
     echo "=== Status Layanan ==="
     echo "Xray Core: $(systemctl is-active xray)"
-    echo "SSH Websocket (Port 80): $(systemctl is-active sshws)"
-    echo "SSH SSL Websocket (Port 443): $(systemctl is-active sshws-ssl)"
+    echo "Nginx (Reverse Proxy): $(systemctl is-active nginx)"
+    echo "SSH Websocket (Internal): $(systemctl is-active sshws)"
+    echo "NoobzVPN (Internal): $(systemctl is-active noobzvpn-ws)"
     echo "Stunnel4: $(systemctl is-active stunnel4)"
     echo "Dropbear: $(systemctl is-active dropbear)"
-    echo "Nginx: $(systemctl is-active nginx)"
     echo "BadVPN: $(systemctl is-active badvpn)"
-    echo "NoobzVPN (Port 80): $(systemctl is-active noobzvpn-80)"
-    echo "NoobzVPN (Port 443): $(systemctl is-active noobzvpn-443)"
     echo "Telegram Bot: $(systemctl is-active vpbot)"
 }
 
 restart_services() {
     echo "Merestart semua layanan..."
-    systemctl restart xray sshws sshws-ssl stunnel4 dropbear nginx badvpn noobzvpn-80 noobzvpn-443 vpbot
+    systemctl restart xray nginx sshws noobzvpn-ws stunnel4 dropbear badvpn vpbot
     echo "Semua layanan telah di-restart."
 }
 
@@ -933,7 +901,7 @@ EOF
 
 restart_noobzvpn() {
     echo "Merestart layanan NoobzVPN..."
-    systemctl restart noobzvpn-80 noobzvpn-443
+    systemctl restart noobzvpn-ws
     echo "NoobzVPN telah di-restart."
 }
 
@@ -1081,7 +1049,7 @@ def button(update: Update, context: CallbackContext) -> None:
         query.edit_message_text(text=f"🔧 <b>Status Layanan:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
     elif query.data == 'restart_all':
         query.edit_message_text(text="🔄 Sedang merestart semua layanan...")
-        run_command('systemctl restart xray sshws sshws-ssl stunnel4 dropbear nginx badvpn noobzvpn-80 noobzvpn-443 vpbot')
+        run_command('systemctl restart xray nginx sshws noobzvpn-ws stunnel4 dropbear badvpn vpbot')
         query.edit_message_text(text="✅ Semua layanan telah di-restart.")
     elif query.data == 'info_vps':
         info = run_command("hostname && cat /etc/os-release | grep PRETTY_NAME | cut -d '\"' -f 2 && curl -s ipinfo.io/ip && uptime -p")
@@ -1171,24 +1139,21 @@ Domain: $DOMAIN
 OpenSSH: 22
 Dropbear: 109, 143
 Stunnel4: 222, 777
-SSH Websocket: 80
-SSH SSL Websocket: 443
+# DIUBAH: Informasi akses baru
+SSH Websocket: 80 (/ssh-ws)
+SSH SSL Websocket: 443 (/ssh-ws)
+NoobzVPN: 80 (/noobz)
 Nginx: 81
 BadVPN: 7100-7900
-NoobzVPN: 80, 443
 ============================================
 AKUN XRAY (VLESS, VMESS, TROJAN, SS)
 UUID: $UUID
 ============================================
 VLESS WS TLS: vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&host=$DOMAIN&path=%2Fvless#VLESS-TLS-$DOMAIN
-VLESS WS NoneTLS: vless://$UUID@$DOMAIN:80?encryption=none&security=none&type=ws&host=$DOMAIN&path=%2Fvless#VLESS-NoneTLS-$DOMAIN
 VLESS gRPC TLS: vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&host=$DOMAIN&serviceName=vless-grpc&mode=gun#VLESS-gRPC-$DOMAIN
 VMESS WS TLS: vmess://$(echo -n '{"v": "2", "ps": "VMESS-TLS-'$DOMAIN'", "add": "'$DOMAIN'", "port": "443", "id": "'$UUID'", "aid": "0", "scy": "auto", "net": "ws", "type": "none", "host": "'$DOMAIN'", "path": "/vmess", "tls": "tls"}' | base64 -w 0)
-VMESS WS NoneTLS: vmess://$(echo -n '{"v": "2", "ps": "VMESS-NoneTLS-'$DOMAIN'", "add": "'$DOMAIN'", "port": "80", "id": "'$UUID'", "aid": "0", "scy": "auto", "net": "ws", "type": "none", "host": "'$DOMAIN'", "path": "/vmess", "tls": "none"}' | base64 -w 0)
 TROJAN WS TLS: trojan://$UUID@$DOMAIN:443?security=tls&type=ws&host=$DOMAIN&path=%2Ftrojan#TROJAN-TLS-$DOMAIN
-TROJAN WS NoneTLS: trojan://$UUID@$DOMAIN:80?security=none&type=ws&host=$DOMAIN&path=%2Ftrojan#TROJAN-NoneTLS-$DOMAIN
 SHADOWSOCKS WS TLS: ss://$(echo -n "chacha20-ietf-poly1305:$UUID@$DOMAIN:443" | base64 -w 0)#SS-TLS-$DOMAIN
-SHADOWSOCKS WS NoneTLS: ss://$(echo -n "chacha20-ietf-poly1305:$UUID@$DOMAIN:80" | base64 -w 0)#SS-NoneTLS-$DOMAIN
 ============================================
 Ketik 'menu' di terminal untuk membuka menu.
 Kontrol VPS melalui bot Telegram Anda.
