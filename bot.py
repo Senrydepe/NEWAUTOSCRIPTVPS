@@ -71,6 +71,7 @@ def button(update: Update, context: CallbackContext) -> None:
             [InlineKeyboardButton("Vless WS", callback_data=f'create_{account_type}_vless')],
             [InlineKeyboardButton("Trojan WS", callback_data=f'create_{account_type}_trojan')],
             [InlineKeyboardButton("Shadowsocks WS", callback_data=f'create_{account_type}_ss')],
+            [InlineKeyboardButton("NoobzVPN", callback_data=f'create_{account_type}_noobz')],
             [InlineKeyboardButton("⬅️ Kembali", callback_data='create_account_menu')],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -79,7 +80,7 @@ def button(update: Update, context: CallbackContext) -> None:
     elif query.data.startswith('create_'):
         parts = query.data.split('_')
         account_type = parts[1]
-        service_map = {'ssh': '1', 'vmess': '2', 'vless': '3', 'trojan': '4', 'ss': '5'}
+        service_map = {'ssh': '1', 'vmess': '2', 'vless': '3', 'trojan': '4', 'ss': '5', 'noobz': '6'}
         service_name = parts[2]
         service_choice = service_map.get(service_name, '0')
 
@@ -92,9 +93,30 @@ def button(update: Update, context: CallbackContext) -> None:
         
         # Hapus file sementara
         if os.path.exists('/tmp/service_choice'):
-            os.remove('/tmp/service_choice')
+            os.remove('/tmp/service_choice)
             
-        query.edit_message_text(text=f"✅ Membuat akun {account_type} untuk layanan {service_name}...\n\n<pre>{result}</pre>", parse_mode='HTML')
+        # PECAH OUTPUT MENJADI BEBERAPA PESAN
+        messages = result.split('━━━━━━━━━━━━━━━━━━━━━━━')
+        
+        # Kirim pesan pertama (konfirmasi)
+        query.edit_message_text(text=f"✅ Membuat akun {account_type} untuk layanan {service_name}...")
+        
+        # Kirim setiap bagian sebagai pesan terpisah
+        for msg_part in messages:
+            stripped_part = msg_part.strip()
+            if stripped_part:
+                formatted_message = f"━━━━━━━━━━━━━━━━━━━━━━━\n{stripped_part}"
+                try:
+                    context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=f"```{formatted_message}```",
+                        parse_mode='MarkdownV2'
+                    )
+                except Exception:
+                    context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=formatted_message
+                    )
 
     elif query.data == 'delete_account':
         query.edit_message_text(text="Untuk menghapus akun, silakan gunakan menu 'menu' di terminal VPS dan pilih opsi 3.")
