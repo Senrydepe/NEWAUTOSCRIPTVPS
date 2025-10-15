@@ -254,6 +254,52 @@ WantedBy=multi-user.target
 EOF
 systemctl enable sshws-ssl && systemctl start sshws-ssl
 
+# --- DITAMBAHKAN: INSTALL NOOBZVPN ---
+# Install NoobzVPN
+print_color "YELLOW" "Menginstall NoobzVPN..."
+# Unduh binary NoobzVPN
+wget -O /usr/local/bin/noobzvpn "https://github.com/noobzvpn/noobzvpn/releases/download/v1.0.0-beta/noobzvpn-linux-amd64" && chmod +x /usr/local/bin/noobzvpn
+
+# Buat service untuk NoobzVPN Port 80
+cat > /etc/systemd/system/noobzvpn-80.service << EOF
+[Unit]
+Description=NoobzVPN Port 80 Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/noobzvpn -http-addr :80
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Buat service untuk NoobzVPN Port 443
+cat > /etc/systemd/system/noobzvpn-443.service << EOF
+[Unit]
+Description=NoobzVPN Port 443 Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/noobzvpn -https-addr :443
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable dan start layanan NoobzVPN
+systemctl daemon-reload
+systemctl enable noobzvpn-80 noobzvpn-443
+systemctl start noobzvpn-80 noobzvpn-443
+# --- SELESAI INSTALL NOOBZVPN ---
+
 # Install & Configure Nginx
 print_color "YELLOW" "Menginstall dan konfigurasi Nginx..."
 systemctl stop nginx
@@ -393,11 +439,6 @@ EOF
 # Restart Xray
 systemctl restart xray
 
-# Install NoobzVPN (asumsi script noobzvpn diunduh dan dijalankan)
-print_color "YELLOW" "Menginstall NoobzVPN..."
-# Bagian ini perlu disesuaikan dengan sumber instalasi NoobzVPN yang benar
-print_color "YELLOW" "NoobzVPN memerlukan instalasi manual. Skrip hanya membuat konfigurasi dasar."
-
 # Firewall
 print_color "YELLOW" "Mengkonfigurasi Firewall (UFW)..."
 ufw disable
@@ -485,6 +526,7 @@ SSH Websocket: 80
 SSH SSL Websocket: 443
 Nginx: 81
 BadVPN: 7100-7900
+NoobzVPN: 80, 443
 ============================================
 AKUN XRAY (VLESS, VMESS, TROJAN, SS)
 UUID: $UUID
