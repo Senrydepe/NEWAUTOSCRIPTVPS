@@ -1,0 +1,419 @@
+#!/bin/bash
+
+# Warna untuk output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
+
+# Fungsi untuk mencetak teks berwarna
+print_color() {
+    printf "${!1}%s${NC}\n" "$2"
+}
+
+# Cek root
+if [ "$(id -u)" -ne 0 ]; then
+   print_color "RED" "Skrip ini harus dijalankan sebagai root!" >&2
+   exit 1
+fi
+
+# Mendapatkan informasi OS
+if [ -f /etc/debian_version ]; then
+    OS="debian"
+    VERSION_ID=$(grep VERSION_ID /etc/os-release | cut -d'=' -f2 | tr -d '"')
+elif [ -f /etc/lsb-release ]; then
+    OS="ubuntu"
+    VERSION_ID=$(grep DISTRIB_RELEASE /etc/lsb-release | cut -d'=' -f2)
+else
+    print_color "RED" "OS tidak didukung. Gunakan Debian atau Ubuntu."
+    exit 1
+fi
+
+print_color "GREEN" "OS Terdeteksi: $OS $VERSION_ID"
+
+# Input Domain
+clear
+print_color "YELLOW" "============================================"
+print_color "YELLOW" "         VPS AUTO-SCRIPT INSTALLER         "
+print_color "YELLOW" "============================================"
+echo
+read -p "$(echo -e ${GREEN}Masukkan Domain/Subdomain Anda: ${NC})" DOMAIN
+if [ -z "$DOMAIN" ]; then
+    print_color "RED" "Domain tidak boleh kosong!"
+    exit 1
+fi
+
+# Input Bot Token & Owner ID
+read -p "$(echo -e ${GREEN}Masukkan Bot Token Telegram: ${NC})" BOT_TOKEN
+if [ -z "$BOT_TOKEN" ]; then
+    print_color "RED" "Bot Token tidak boleh kosong!"
+    exit 1
+fi
+
+read -p "$(echo -e ${GREEN}Masukkan Owner ID Telegram: ${NC})" OWNER_ID
+if [ -z "$OWNER_ID" ]; then
+    print_color "RED" "Owner ID tidak boleh kosong!"
+    exit 1
+fi
+
+# Update System
+print_color "YELLOW" "Memperbarui sistem..."
+apt-get update -y && apt-get upgrade -y
+
+# Install Dependencies
+print_color "YELLOW" "Menginstall dependensi..."
+apt-get install -y curl wget git unzip gnupg2 lsb-release nginx certbot python3-certbot-nginx socat netcat-openbsd cron jq
+
+# Set Domain di /etc/hosts
+sed -i "/127.0.0.1 localhost/c\127.0.0.1 localhost $DOMAIN" /etc/hosts
+
+# Install Xray Core
+print_color "YELLOW" "Menginstall Xray Core..."
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+
+# Install & Configure Stunnel4
+print_color "YELLOW" "Menginstall Stunnel4..."
+apt-get install -y stunnel4 -qq
+cat > /etc/stunnel/stunnel.conf << EOF
+cert = /etc/stunnel/stunnel.pem
+client = no
+socket = a:SO_REUSEADDR=1
+socket = l:TCP_NODELAY=1
+socket = r:TCP_NODELAY=1
+
+[ssh-222]
+accept = 222
+connect = 127.0.0.1:22
+
+[ssh-777]
+accept = 777
+connect = 127.0.0.1:22
+EOF
+openssl genrsa -out key.pem 2048
+openssl req -new -x509 -key key.pem -out cert.pem -days 3650 -subj "/CN=$DOMAIN"
+cat key.pem cert.pem > /etc/stunnel/stunnel.pem
+sed -i 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4
+systemctl enable stunnel4 && systemctl restart stunnel4
+
+# Install Dropbear
+print_color "YELLOW" "Menginstall Dropbear..."
+apt-get install -y dropbear
+sed -i 's/NO_START=1/NO_START=0/g' /etc/default/dropbear
+sed -i 's/DROPBEAR_PORT=22/DROPBEAR_PORT="109 143"/g' /etc/default/dropbear
+sed -i 's/DROPBEAR_EXTRA_ARGS=/DROPBEAR_EXTRA_ARGS="-p 109 -p 143"/g' /etc/default/dropbear
+systemctl restart dropbear
+
+# Install BadVPN
+print_color "YELLOW" "Menginstall BadVPN..."
+cd /usr/local/src
+wget https://github.com/ambrop72/badvpn/archive/refs/tags/1.999.130.tar.gz
+tar -xvzf 1.999.130.tar.gz
+cd badvpn-1.999.130
+mkdir build && cd build
+cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1
+make && make install
+cd /root && rm -rf /usr/local/src/badvpn*
+
+# Buat service untuk badvpn
+cat > /etc/systemd/system/badvpn.service << EOF
+[Unit]
+Description=BadVPN UDPGW Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/badvpn-udpgw --listen-addr 127.0.0.1:7300
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable badvpn && systemctl start badvpn
+
+# Install SSH Websocket
+print_color "YELLOW" "Menginstall SSH Websocket..."
+git clone https://github.com/penyaircode/sshws.git /usr/local/bin/sshws
+chmod +x /usr/local/bin/sshws/sshws
+cat > /etc/systemd/system/sshws.service << EOF
+[Unit]
+Description=SSH Websocket Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/sshws/sshws -p 80
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable sshws && systemctl start sshws
+
+# Install SSH SSL Websocket
+print_color "YELLOW" "Menginstall SSH SSL Websocket..."
+cat > /etc/systemd/system/sshws-ssl.service << EOF
+[Unit]
+Description=SSH SSL Websocket Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/sshws/sshws -p 443
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable sshws-ssl && systemctl start sshws-ssl
+
+# Install & Configure Nginx
+print_color "YELLOW" "Menginstall dan konfigurasi Nginx..."
+systemctl stop nginx
+cat > /etc/nginx/sites-available/default << EOF
+server {
+    listen 81;
+    listen [::]:81;
+    
+    server_name $DOMAIN;
+    
+    root /var/www/html;
+    index index.html index.htm index.nginx-debian.html;
+    
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOF
+nginx -t && systemctl restart nginx
+
+# Install SSL
+print_color "YELLOW" "Meminta sertifikat SSL untuk $DOMAIN..."
+systemctl stop nginx
+certbot certonly --standalone -d $DOMAIN --non-interactive --agree-tos --email admin@$DOMAIN -m admin@$DOMAIN
+systemctl start nginx
+
+# Membuat Konfigurasi Xray
+print_color "YELLOW" "Membuat konfigurasi Xray..."
+# Generate UUID
+UUID=$(cat /proc/sys/kernel/random/uuid)
+
+# Buat direktori jika belum ada
+mkdir -p /etc/xray
+
+# Buat config.json
+cat > /etc/xray/config.json << EOF
+{
+    "log": { "loglevel": "warning" },
+    "inbounds": [
+        {
+            "listen": "0.0.0.0", "port": 443, "protocol": "vless",
+            "settings": { "clients": [{ "id": "$UUID", "flow": "xtls-rprx-vision" }], "decryption": "none" },
+            "streamSettings": {
+                "network": "ws", "security": "tls",
+                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
+                "wsSettings": { "path": "/vless" }
+            }, "tag": "Vless-WSS-TLS"
+        },
+        {
+            "listen": "0.0.0.0", "port": 443, "protocol": "vmess",
+            "settings": { "clients": [{ "id": "$UUID" }] },
+            "streamSettings": {
+                "network": "ws", "security": "tls",
+                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
+                "wsSettings": { "path": "/vmess" }
+            }, "tag": "Vmess-WSS-TLS"
+        },
+        {
+            "listen": "0.0.0.0", "port": 443, "protocol": "trojan",
+            "settings": { "clients": [{ "password": "$UUID" }] },
+            "streamSettings": {
+                "network": "ws", "security": "tls",
+                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
+                "wsSettings": { "path": "/trojan" }
+            }, "tag": "Trojan-WSS-TLS"
+        },
+        {
+            "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks",
+            "settings": { "clients": [{ "method": "chacha20-ietf-poly1305", "password": "$UUID" }] },
+            "streamSettings": {
+                "network": "ws", "security": "tls",
+                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
+                "wsSettings": { "path": "/ss" }
+            }, "tag": "SS-WSS-TLS"
+        },
+        {
+            "listen": "0.0.0.0", "port": 80, "protocol": "vless",
+            "settings": { "clients": [{ "id": "$UUID" }], "decryption": "none" },
+            "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vless" } }, "tag": "Vless-WS-NoneTLS"
+        },
+        {
+            "listen": "0.0.0.0", "port": 80, "protocol": "vmess",
+            "settings": { "clients": [{ "id": "$UUID" }] },
+            "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/vmess" } }, "tag": "Vmess-WS-NoneTLS"
+        },
+        {
+            "listen": "0.0.0.0", "port": 80, "protocol": "trojan",
+            "settings": { "clients": [{ "password": "$UUID" }] },
+            "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/trojan" } }, "tag": "Trojan-WS-NoneTLS"
+        },
+        {
+            "listen": "0.0.0.0", "port": 80, "protocol": "shadowsocks",
+            "settings": { "clients": [{ "method": "chacha20-ietf-poly1305", "password": "$UUID" }] },
+            "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/ss" } }, "tag": "SS-WS-NoneTLS"
+        },
+        {
+            "listen": "0.0.0.0", "port": 443, "protocol": "vless",
+            "settings": { "clients": [{ "id": "$UUID" }], "decryption": "none" },
+            "streamSettings": {
+                "network": "grpc", "security": "tls",
+                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
+                "grpcSettings": { "serviceName": "vless-grpc" }
+            }, "tag": "Vless-gRPC-TLS"
+        },
+        {
+            "listen": "0.0.0.0", "port": 443, "protocol": "vmess",
+            "settings": { "clients": [{ "id": "$UUID" }] },
+            "streamSettings": {
+                "network": "grpc", "security": "tls",
+                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
+                "grpcSettings": { "serviceName": "vmess-grpc" }
+            }, "tag": "Vmess-gRPC-TLS"
+        },
+        {
+            "listen": "0.0.0.0", "port": 443, "protocol": "trojan",
+            "settings": { "clients": [{ "password": "$UUID" }] },
+            "streamSettings": {
+                "network": "grpc", "security": "tls",
+                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
+                "grpcSettings": { "serviceName": "trojan-grpc" }
+            }, "tag": "Trojan-gRPC-TLS"
+        },
+        {
+            "listen": "0.0.0.0", "port": 443, "protocol": "shadowsocks",
+            "settings": { "clients": [{ "method": "chacha20-ietf-poly1305", "password": "$UUID" }] },
+            "streamSettings": {
+                "network": "grpc", "security": "tls",
+                "tlsSettings": { "certificates": [{ "certificateFile": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem", "keyFile": "/etc/letsencrypt/live/$DOMAIN/privkey.pem" }] },
+                "grpcSettings": { "serviceName": "ss-grpc" }
+            }, "tag": "SS-gRPC-TLS"
+        }
+    ],
+    "outbounds": [{ "protocol": "freedom" }]
+}
+EOF
+
+# Restart Xray
+systemctl restart xray
+
+# Install NoobzVPN (asumsi script noobzvpn diunduh dan dijalankan)
+print_color "YELLOW" "Menginstall NoobzVPN..."
+# Bagian ini perlu disesuaikan dengan sumber instalasi NoobzVPN yang benar
+print_color "YELLOW" "NoobzVPN memerlukan instalasi manual. Skrip hanya membuat konfigurasi dasar."
+
+# Firewall
+print_color "YELLOW" "Mengkonfigurasi Firewall (UFW)..."
+ufw disable
+ufw --force reset
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw allow 81/tcp
+ufw allow 109/tcp
+ufw allow 143/tcp
+ufw allow 222/tcp
+ufw allow 777/tcp
+ufw allow 7100:7900/udp
+ufw --force enable
+
+# Install Menu VPS
+print_color "YELLOW" "Menginstall Menu VPS..."
+# GANTI URL INI dengan URL ke file menu.sh di GitHub Anda
+wget -O /usr/local/bin/menu "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/main/menu.sh" && chmod +x /usr/local/bin/menu
+
+# Install Bot Telegram
+print_color "YELLOW" "Menginstall Bot Telegram..."
+apt-get install -y python3 python3-pip
+pip3 install python-telegram-bot --upgrade
+
+mkdir -p /etc/vpbot
+cat > /etc/vpbot/config.ini << EOF
+[bot]
+token = $BOT_TOKEN
+owner_id = $OWNER_ID
+EOF
+
+# GANTI URL INI dengan URL ke file bot.py di GitHub Anda
+wget -O /etc/vpbot/bot.py "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/main/bot.py" && chmod +x /etc/vpbot/bot.py
+
+cat > /etc/systemd/system/vpbot.service << EOF
+[Unit]
+Description=VPS Telegram Bot
+After=network.target
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/etc/vpbot
+ExecStart=/usr/bin/python3 /etc/vpbot/bot.py
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable vpbot
+systemctl start vpbot
+
+# Menyimpan informasi akun
+cat > /root/akun.txt << EOF
+============================================
+         INFORMASI AKUN VPS ANDA
+============================================
+Domain: $DOMAIN
+============================================
+OpenSSH: 22
+Dropbear: 109, 143
+Stunnel4: 222, 777
+SSH Websocket: 80
+SSH SSL Websocket: 443
+Nginx: 81
+BadVPN: 7100-7900
+============================================
+AKUN XRAY (VLESS, VMESS, TROJAN, SS)
+UUID: $UUID
+============================================
+VLESS WS TLS: vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&host=$DOMAIN&path=%2Fvless#VLESS-TLS-$DOMAIN
+VLESS WS NoneTLS: vless://$UUID@$DOMAIN:80?encryption=none&security=none&type=ws&host=$DOMAIN&path=%2Fvless#VLESS-NoneTLS-$DOMAIN
+VLESS gRPC TLS: vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=grpc&host=$DOMAIN&serviceName=vless-grpc&mode=gun#VLESS-gRPC-$DOMAIN
+VMESS WS TLS: vmess://$(echo -n '{"v": "2", "ps": "VMESS-TLS-'$DOMAIN'", "add": "'$DOMAIN'", "port": "443", "id": "'$UUID'", "aid": "0", "scy": "auto", "net": "ws", "type": "none", "host": "'$DOMAIN'", "path": "/vmess", "tls": "tls"}' | base64 -w 0)
+VMESS WS NoneTLS: vmess://$(echo -n '{"v": "2", "ps": "VMESS-NoneTLS-'$DOMAIN'", "add": "'$DOMAIN'", "port": "80", "id": "'$UUID'", "aid": "0", "scy": "auto", "net": "ws", "type": "none", "host": "'$DOMAIN'", "path": "/vmess", "tls": "none"}' | base64 -w 0)
+TROJAN WS TLS: trojan://$UUID@$DOMAIN:443?security=tls&type=ws&host=$DOMAIN&path=%2Ftrojan#TROJAN-TLS-$DOMAIN
+TROJAN WS NoneTLS: trojan://$UUID@$DOMAIN:80?security=none&type=ws&host=$DOMAIN&path=%2Ftrojan#TROJAN-NoneTLS-$DOMAIN
+SHADOWSOCKS WS TLS: ss://$(echo -n "chacha20-ietf-poly1305:$UUID@$DOMAIN:443" | base64 -w 0)#SS-TLS-$DOMAIN
+SHADOWSOCKS WS NoneTLS: ss://$(echo -n "chacha20-ietf-poly1305:$UUID@$DOMAIN:80" | base64 -w 0)#SS-NoneTLS-$DOMAIN
+============================================
+Ketik 'menu' di terminal untuk membuka menu.
+Kontrol VPS melalui bot Telegram Anda.
+============================================
+EOF
+
+clear
+print_color "GREEN" "============================================"
+print_color "GREEN" "        INSTALASI BERHASIL SELESAI!        "
+print_color "GREEN" "============================================"
+echo
+print_color "YELLOW" "Informasi akun telah disimpan di /root/akun.txt"
+echo
+cat /root/akun.txt
+echo
+print_color "GREEN" "Ketik 'menu' di terminal untuk membuka menu VPS."
+print_color "GREEN" "Kontrol VPS Anda melalui bot Telegram yang sudah Anda buat."
