@@ -36,6 +36,8 @@ def start(update: Update, context: CallbackContext) -> None:
         [InlineKeyboardButton("🔄 Restart Semua Layanan", callback_data='restart_all')],
         [InlineKeyboardButton("💻 Info VPS", callback_data='info_vps')],
         [InlineKeyboardButton("➕ Buat Akun Trial", callback_data='create_trial')],
+        [InlineKeyboardButton("🎨 Ubah Banner SSH", callback_data='change_banner')],
+        [InlineKeyboardButton("🔌 Restart NoobzVPN", callback_data='restart_noobzvpn')],
     ]
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -48,11 +50,9 @@ def button(update: Update, context: CallbackContext) -> None:
         query.answer("Maaf, Anda tidak memiliki izin.")
         return
         
-    query.answer() # Acknowledge the button press
+    query.answer()
 
     if query.data == 'create_trial':
-        # Logika pembuatan akun trial
-        # Misalnya, panggil skrip menu
         result = run_command('/usr/local/bin/menu create_trial')
         query.edit_message_text(text=f"🔧 Membuat akun trial...\n\n<pre>{result}</pre>", parse_mode='HTML')
 
@@ -62,12 +62,35 @@ def button(update: Update, context: CallbackContext) -> None:
 
     elif query.data == 'restart_all':
         query.edit_message_text(text="🔄 Sedang merestart semua layanan...")
-        run_command('systemctl restart xray sshws sshws-ssl stunnel4 dropbear nginx badvpn vpbot')
+        run_command('systemctl restart xray sshws sshws-ssl stunnel4 dropbear nginx badvpn noobzvpn-80 noobzvpn-443 vpbot')
         query.edit_message_text(text="✅ Semua layanan telah di-restart.")
 
     elif query.data == 'info_vps':
         info = run_command("hostname && cat /etc/os-release | grep PRETTY_NAME | cut -d '\"' -f 2 && curl -s ipinfo.io/ip && uptime -p")
         query.edit_message_text(text=f"💻 <b>Info VPS:</b>\n\n<pre>{info}</pre>", parse_mode='HTML')
+
+    elif query.data == 'change_banner':
+        banner_content = """<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
+
+<h3 style="text-align:center"><span style="color:white"><span style="color:lime">AWS SERVER</span></span></h3> 
+
+<h3 style="text-align:center"><span style="color:#ffff00">@Parael1101</span></h3>
+
+<h3 style="text-align:center"><span style="color:red">SCRIPT BY vinstechmy</span></h3>
+
+<h3 style="text-align:center"><span style="color:white">Parael</span></h3>
+
+<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>"""
+        with open('/etc/motd', 'w') as f:
+            f.write(banner_content)
+        
+        query.edit_message_text(text="✅ Banner SSH berhasil diperbarui dengan template default!")
+
+    elif query.data == 'restart_noobzvpn':
+        query.edit_message_text(text="🔌 Sedang merestart NoobzVPN...")
+        result = run_command('/usr/local/bin/menu restart_noobzvpn')
+        query.edit_message_text(text=f"🔌 <b>Restart NoobzVPN:</b>\n\n<pre>{result}</pre>", parse_mode='HTML')
+
 
 def main() -> None:
     updater = Updater(BOT_TOKEN)
