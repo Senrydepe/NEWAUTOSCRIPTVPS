@@ -13,8 +13,9 @@ Skrip otomatis untuk instalasi dan manajemen VPS (VPN Server) dengan berbagai la
     -   Xray Core (Vmess, Vless, Trojan, Shadowsocks) dengan WS dan gRPC (TLS & None-TLS)
     -   BadVPN (UDPGW)
     -   Nginx
--   **Manajemen via Telegram:** Kontrol VPS (cek status, restart, buat akun, dll) melalui bot Telegram.
+-   **Manajemen via Telegram:** Kontrol VPS (cek status, restart, buat akun, ubah banner, dll) melalui bot Telegram.
 -   **Keamanan:** Hanya `OWNER_ID` yang bisa mengakses menu bot.
+-   **Stabilitas:** Skrip tidak bergantung pada link download eksternal yang bisa error 404.
 
 ## 📋 Prasyarat
 
@@ -29,9 +30,8 @@ Skrip otomatis untuk instalasi dan manajemen VPS (VPN Server) dengan berbagai la
 1.  **Login ke VPS** sebagai user `root`.
 2.  **Jalankan perintah instalasi:**
     ```bash
-    wget -O install.sh https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/main/install.sh && chmod +x install.sh && ./install.sh
+    wget -O install.sh https://raw.githubusercontent.com/Senrydepe/NEWAUTOSCRIPTVPS/main/install.sh && chmod +x install.sh && ./install.sh
     ```
-    > **Penting:** Ganti `YOUR_GITHUB_USERNAME` dan `YOUR_REPO_NAME` dengan username dan nama repositori GitHub Anda.
 
 3.  **Ikuti instruksi:** Skrip akan meminta Anda untuk memasukkan:
     -   Domain/Subdomain
