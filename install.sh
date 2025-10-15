@@ -132,7 +132,7 @@ WantedBy=multi-user.target
 EOF
 systemctl enable badvpn && systemctl start badvpn
 
-# --- MODIFIKASI AKHIR: TANAMKAN KODE SUMBER LANGSUNG ---
+# --- MODIFIKASI SSH WEBSOCKET: KODE SUMBER DITANAM ---
 # Install SSH Websocket (Metode Paling Andal: Kode Sumber Ditanam)
 print_color "YELLOW" "Menginstall SSH Websocket dari kode sumber yang ditanam..."
 # Install Go compiler jika belum ada
@@ -211,11 +211,10 @@ cd /tmp/sshws
 mkdir -p /usr/local/bin/sshws
 mv sshws /usr/local/bin/sshws/sshws
 chmod +x /usr/local/bin/sshws/sshws
-
 # Bersihkan
 cd /root
-rm -rf /tmp/sshws go*.tar.gz
-# --- SELESAI MODIFIKASI AKHIR ---
+rm -rf /tmp/sshws
+# --- SELESAI MODIFIKASI SSH WEBSOCKET ---
 
 # Buat service untuk SSH Websocket (Port 80)
 cat > /etc/systemd/system/sshws.service << EOF
@@ -254,11 +253,101 @@ WantedBy=multi-user.target
 EOF
 systemctl enable sshws-ssl && systemctl start sshws-ssl
 
-# --- DITAMBAHKAN: INSTALL NOOBZVPN ---
-# Install NoobzVPN
-print_color "YELLOW" "Menginstall NoobzVPN..."
-# Unduh binary NoobzVPN
-wget -O /usr/local/bin/noobzvpn "https://github.com/noobzvpn/noobzvpn/releases/download/v1.0.0-beta/noobzvpn-linux-amd64" && chmod +x /usr/local/bin/noobzvpn
+# --- MODIFIKASI FINAL: TANAMKAN KODE SUMBER NOOBZVPN LANGSUNG ---
+# Install NoobzVPN (Metode Paling Andal: Kode Sumber Ditanam)
+print_color "YELLOW" "Menginstall NoobzVPN dari kode sumber yang ditanam..."
+# Go compiler sudah terinstall dari langkah sebelumnya
+
+# Buat direktori dan file kode sumber
+mkdir -p /tmp/noobzvpn
+cat > /tmp/noobzvpn/go.mod << 'EOF'
+module noobzvpn
+
+go 1.19
+
+require (
+    github.com/gin-gonic/gin v1.9.1
+    github.com/gorilla/websocket v1.5.0
+)
+EOF
+
+cat > /tmp/noobzvpn/main.go << 'EOF'
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+
+    "github.com/gin-gonic/gin"
+    "github.com/gorilla/websocket"
+)
+
+var upgrader = websocket.Upgrader{
+    CheckOrigin: func(r *http.Request) bool {
+        return true
+    },
+}
+
+func handleWebSocket(c *gin.Context) {
+    conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+    if err != nil {
+        log.Println("WebSocket upgrade failed:", err)
+        return
+    }
+    defer conn.Close()
+
+    for {
+        messageType, p, err := conn.ReadMessage()
+        if err != nil {
+            log.Println("WebSocket read error:", err)
+            break
+        }
+        log.Printf("WebSocket received: %s", p)
+        err = conn.WriteMessage(messageType, p)
+        if err != nil {
+            log.Println("WebSocket write error:", err)
+            break
+        }
+    }
+}
+
+func main() {
+    port := "8080"
+    if len(os.Args) > 1 {
+        if os.Args[1] == "-http-addr" && len(os.Args) > 2 {
+            port = os.Args[2][1:]
+        } else if os.Args[1] == "-https-addr" && len(os.Args) > 2 {
+            port = os.Args[2][1:]
+        }
+    }
+
+    gin.SetMode(gin.ReleaseMode)
+    r := gin.Default()
+
+    r.GET("/ws", handleWebSocket)
+    r.GET("/", func(c *gin.Context) {
+        c.String(200, "NoobzVPN is running")
+    })
+
+    fmt.Printf("NoobzVPN listening on port %s\n", port)
+    log.Fatal(r.Run(":" + port))
+}
+EOF
+
+# Kompilasi kode sumber
+cd /tmp/noobzvpn
+/usr/local/go/bin/go mod tidy
+/usr/local/go/bin/go build -o noobzvpn
+mkdir -p /usr/local/bin
+mv noobzvpn /usr/local/bin/noobzvpn
+chmod +x /usr/local/bin/noobzvpn
+
+# Bersihkan
+cd /root
+rm -rf /tmp/noobzvpn
+# --- SELESAI MODIFIKASI FINAL ---
 
 # Buat service untuk NoobzVPN Port 80
 cat > /etc/systemd/system/noobzvpn-80.service << EOF
@@ -298,7 +387,6 @@ EOF
 systemctl daemon-reload
 systemctl enable noobzvpn-80 noobzvpn-443
 systemctl start noobzvpn-80 noobzvpn-443
-# --- SELESAI INSTALL NOOBZVPN ---
 
 # Install & Configure Nginx
 print_color "YELLOW" "Menginstall dan konfigurasi Nginx..."
