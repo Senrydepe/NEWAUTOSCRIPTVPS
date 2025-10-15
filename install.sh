@@ -62,7 +62,7 @@ apt-get update -y && apt-get upgrade -y
 
 # Install Dependencies
 print_color "YELLOW" "Menginstall dependensi..."
-apt-get install -y curl wget git unzip gnupg2 lsb-release nginx certbot python3-certbot-nginx socat netcat-openbsd cron jq
+apt-get install -y curl wget git unzip gnupg2 lsb-release nginx certbot python3-certbot-nginx socat netcat-openbsd cron jq build-essential
 
 # Set Domain di /etc/hosts
 sed -i "/127.0.0.1 localhost/c\127.0.0.1 localhost $DOMAIN" /etc/hosts
@@ -132,10 +132,92 @@ WantedBy=multi-user.target
 EOF
 systemctl enable badvpn && systemctl start badvpn
 
-# Install SSH Websocket
-print_color "YELLOW" "Menginstall SSH Websocket..."
-git clone https://github.com/penyaircode/sshws.git /usr/local/bin/sshws
+# --- MODIFIKASI AKHIR: TANAMKAN KODE SUMBER LANGSUNG ---
+# Install SSH Websocket (Metode Paling Andal: Kode Sumber Ditanam)
+print_color "YELLOW" "Menginstall SSH Websocket dari kode sumber yang ditanam..."
+# Install Go compiler jika belum ada
+if ! command -v go &> /dev/null; then
+    print_color "YELLOW" "Menginstall Go compiler..."
+    GO_VERSION="1.21.6"
+    wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+    rm -rf /usr/local/go && tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+    export PATH=$PATH:/usr/local/go/bin
+    echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
+    source /etc/profile
+fi
+
+# Buat direktori dan file kode sumber
+mkdir -p /tmp/sshws
+cat > /tmp/sshws/main.go << 'EOF'
+package main
+
+import (
+    "io"
+    "log"
+    "net"
+    "os"
+    "strings"
+)
+
+func handleConnection(clientConn net.Conn, sshAddr string) {
+    sshConn, err := net.Dial("tcp", sshAddr)
+    if err != nil {
+        log.Printf("Error connecting to SSH server: %v", err)
+        clientConn.Close()
+        return
+    }
+    defer sshConn.Close()
+
+    go func() {
+        _, _ = io.Copy(sshConn, clientConn)
+    }()
+    _, _ = io.Copy(clientConn, sshConn)
+}
+
+func main() {
+    sshAddr := "127.0.0.1:22"
+    listenPort := "80"
+
+    if addr := os.Getenv("SSH_ADDR"); addr != "" {
+        sshAddr = addr
+    }
+
+    if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "-p=") {
+        listenPort = strings.TrimPrefix(os.Args[1], "-p=")
+    }
+
+    listener, err := net.Listen("tcp", ":"+listenPort)
+    if err != nil {
+        log.Fatalf("Failed to listen on port %s: %v", listenPort, err)
+    }
+    defer listener.Close()
+
+    log.Printf("SSH tunnel listening on port %s, forwarding to %s", listenPort, sshAddr)
+
+    for {
+        clientConn, err := listener.Accept()
+        if err != nil {
+            log.Printf("Error accepting connection: %v", err)
+            continue
+        }
+        go handleConnection(clientConn, sshAddr)
+    }
+}
+EOF
+
+# Kompilasi kode sumber
+cd /tmp/sshws
+/usr/local/go/bin/go build -o sshws
+mkdir -p /usr/local/bin/sshws
+mv sshws /usr/local/bin/sshws/sshws
 chmod +x /usr/local/bin/sshws/sshws
+
+# Bersihkan
+cd /root
+rm -rf /tmp/sshws go*.tar.gz
+# --- SELESAI MODIFIKASI AKHIR ---
+
+# Buat service untuk SSH Websocket (Port 80)
 cat > /etc/systemd/system/sshws.service << EOF
 [Unit]
 Description=SSH Websocket Service
@@ -336,8 +418,7 @@ ufw --force enable
 
 # Install Menu VPS
 print_color "YELLOW" "Menginstall Menu VPS..."
-# GANTI URL INI dengan URL ke file menu.sh di GitHub Anda
-wget -O /usr/local/bin/menu "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/main/menu.sh" && chmod +x /usr/local/bin/menu
+wget -O /usr/local/bin/menu "https://raw.githubusercontent.com/Senrydepe/NEWAUTOSCRIPTVPS/main/menu.sh" && chmod +x /usr/local/bin/menu
 
 # Install Bot Telegram
 print_color "YELLOW" "Menginstall Bot Telegram..."
@@ -351,8 +432,7 @@ token = $BOT_TOKEN
 owner_id = $OWNER_ID
 EOF
 
-# GANTI URL INI dengan URL ke file bot.py di GitHub Anda
-wget -O /etc/vpbot/bot.py "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/main/bot.py" && chmod +x /etc/vpbot/bot.py
+wget -O /etc/vpbot/bot.py "https://raw.githubusercontent.com/Senrydepe/NEWAUTOSCRIPTVPS/main/bot.py" && chmod +x /etc/vpbot/bot.py
 
 cat > /etc/systemd/system/vpbot.service << EOF
 [Unit]
@@ -372,6 +452,24 @@ EOF
 systemctl daemon-reload
 systemctl enable vpbot
 systemctl start vpbot
+
+# --- DITAMBAHKAN: PASANG BANNER AWAL ---
+# Membuat Banner SSH
+print_color "YELLOW" "Menginstall Banner SSH..."
+cat > /etc/motd << EOF
+<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
+
+<h3 style="text-align:center"><span style="color:white"><span style="color:lime">AWS SERVER</span></span></h3> 
+
+<h3 style="text-align:center"><span style="color:#ffff00">@Parael1101</span></h3>
+
+<h3 style="text-align:center"><span style="color:red">SCRIPT BY vinstechmy</span></h3>
+
+<h3 style="text-align:center"><span style="color:white">Parael</span></h3>
+
+<h3 style="text-align:center"><span style="color:white"><span style="color:white">================================</span></span></h3>
+EOF
+# --- SELESAI MENAMBAHKAN BANNER ---
 
 # Menyimpan informasi akun
 cat > /root/akun.txt << EOF
